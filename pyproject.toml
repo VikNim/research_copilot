@@ -1,0 +1,32 @@
+[project]
+name = "research-copilot"
+version = "0.1.0"
+description = "AI research and learning copilot: OpenAlex discovery, Lakebase storage, agent-built reading plans."
+authors = [
+    { name = "Vikramsingh Nimbalkar", email = "Vikramsingh.nimbalkar@nutrien.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "databricks-sdk>=0.129.0",
+    "openai>=3.1.0",
+    "pgvector>=0.5.0",
+    "psycopg[binary]>=3.3.4",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.0.52",
+    "streamlit>=1.61.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: hits a real external service (OpenAlex) — needs network, no credentials required",
+]
