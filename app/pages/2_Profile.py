@@ -52,9 +52,16 @@ else:
             st.session_state.pop("selected_collection_id", None)
             st.stop()
 
-        if st.button("← Back to collections"):
+        b1, b2 = st.columns([1, 1])
+        if b1.button("← Back to collections"):
             st.session_state.pop("selected_collection_id", None)
             st.rerun()
+        if b2.button("Open in Workspace →", type="primary"):
+            st.session_state["active_collection_id"] = str(collection_id)
+            st.session_state.pop("search_results", None)
+            st.session_state.pop("open_items", None)
+            st.session_state["active_item"] = None
+            st.switch_page("pages/1_Workspace.py")
 
         st.markdown(f"##### {collection.name}")
 
@@ -85,7 +92,8 @@ else:
 
         for paper in papers:
             authors = ", ".join(link.author.display_name for link in paper.authors if link.author.display_name)
-            status = progress_by_paper.get(paper.id).status if paper.id in progress_by_paper else "not_started"
+            current = progress_by_paper.get(paper.id)
+            current_pct = current.progress_pct if current else 0
 
             with st.container(border=True):
                 c1, c2 = st.columns([3, 1])
@@ -93,16 +101,15 @@ else:
                     st.write(f"**{paper.title}**")
                     st.caption(authors or "Unknown authors")
                 with c2:
-                    new_status = st.selectbox(
-                        "Progress",
-                        ["not_started", "in_progress", "done"],
-                        index=["not_started", "in_progress", "done"].index(status),
-                        key=f"status_{paper.id}",
-                        label_visibility="collapsed",
+                    new_pct = st.slider(
+                        "Progress", 0, 100, current_pct, step=5,
+                        key=f"pct_{paper.id}", label_visibility="collapsed",
                     )
-                    if new_status != status:
-                        progress_repo.set_status(
-                            session, user_id=user.id, paper_id=paper.id, status=new_status, collection_id=collection_id
+                    st.caption(f"{new_pct}% · {progress_repo.status_for_pct(new_pct).replace('_', ' ')}")
+                    if new_pct != current_pct:
+                        progress_repo.set_progress(
+                            session, user_id=user.id, paper_id=paper.id,
+                            progress_pct=new_pct, collection_id=collection_id,
                         )
                         st.rerun()
 

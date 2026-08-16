@@ -86,6 +86,23 @@ def test_collection_paper_order_and_progress_and_next(db_session):
 
 
 @requires_db
+def test_set_status_keeps_progress_pct_consistent(db_session):
+    user = users_repo.upsert_user(db_session, google_sub="sub-6", email="f@example.com", display_name="F", avatar_url=None)
+    papers_repo.upsert_paper(db_session, _fake_paper("WP1", "Status Paper", 2022, 1))
+
+    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="in_progress")
+    assert p.progress_pct == 50
+    assert p.started_at is not None
+
+    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="done")
+    assert p.progress_pct == 100
+    assert p.completed_at is not None
+
+    with pytest.raises(ValueError):
+        progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="halfway")
+
+
+@requires_db
 def test_semantic_search_orders_by_cosine_distance(db_session):
     papers_repo.upsert_paper(db_session, _fake_paper("WV1", "Vector One", 2020, 10))
     papers_repo.upsert_paper(db_session, _fake_paper("WV2", "Vector Two", 2020, 10))

@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from research_copilot.models import Collection, CollectionPaper, Paper
+
+
+def find_by_name(session: Session, *, user_id: uuid.UUID, name: str) -> Collection | None:
+    """Case-insensitive exact match — used to catch a user re-searching a topic
+    they already have a saved collection for, so Save doesn't silently fork it."""
+    stmt = select(Collection).where(
+        Collection.user_id == user_id, func.lower(Collection.name) == name.strip().lower()
+    )
+    return session.scalar(stmt)
 
 
 def create_collection(

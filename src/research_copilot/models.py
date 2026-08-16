@@ -150,6 +150,7 @@ class ReadingProgress(Base):
     __tablename__ = "reading_progress"
     __table_args__ = (
         CheckConstraint("status in ('not_started','in_progress','done')", name="ck_progress_status"),
+        CheckConstraint("progress_pct >= 0 and progress_pct <= 100", name="ck_progress_pct_range"),
         UniqueConstraint("user_id", "paper_id", "collection_id", name="uq_progress_scope"),
         Index("ix_reading_progress_user_id", "user_id"),
     )
@@ -159,6 +160,7 @@ class ReadingProgress(Base):
     paper_id: Mapped[str] = mapped_column(String, ForeignKey("papers.id"), nullable=False)
     collection_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("collections.id"))
     status: Mapped[str] = mapped_column(String, default="not_started")
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0)  # 0-100; status is derived from this
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
