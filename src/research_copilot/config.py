@@ -72,7 +72,7 @@ class Settings:
 
     @property
     def has_fm_api(self) -> bool:
-        return bool(self.fm_api_base_url and self.fm_api_token)
+        return bool(self.fm_api_base_url and (self.fm_api_token or self.databricks_profile))
 
 
 def get_settings() -> Settings:

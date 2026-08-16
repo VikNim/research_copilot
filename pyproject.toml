@@ -14,7 +14,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
     "sqlalchemy>=2.0.52",
-    "streamlit>=1.61.1",
+    "streamlit[auth]>=1.61.1",
 ]
 
 [build-system]

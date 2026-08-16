@@ -1,9 +1,8 @@
 """Embeddings via Databricks Foundation Model APIs (OpenAI-compatible endpoint).
 
-UNVERIFIED end-to-end — there's no Databricks workspace/FM API endpoint wired up
-yet (see project memory: infra starts from zero). The client shape below matches
-Databricks' documented OpenAI-compatible surface; confirm the exact endpoint path
-and response shape once real credentials exist.
+UNVERIFIED end-to-end — confirm the exact endpoint path and response shape once
+a login session + FM API access actually exist. See databricks_auth.py for how
+the bearer token is obtained (OAuth via CLI profile, no PAT required).
 
 v1 scope: embeds abstracts, notes, and learning-goal text as single vectors —
 no chunking. A whole paper's full text (if v1.1 adds it) would need chunking
@@ -15,6 +14,7 @@ from __future__ import annotations
 from openai import OpenAI
 
 from research_copilot.config import Settings, get_settings
+from research_copilot.databricks_auth import FMAuthNotConfigured, resolve_bearer_token
 
 
 class EmbeddingsNotConfigured(RuntimeError):
@@ -24,9 +24,13 @@ class EmbeddingsNotConfigured(RuntimeError):
 def _client(settings: Settings) -> OpenAI:
     if not settings.has_fm_api:
         raise EmbeddingsNotConfigured(
-            "Set DATABRICKS_FM_BASE_URL and DATABRICKS_FM_TOKEN to enable embeddings."
+            "Set DATABRICKS_FM_BASE_URL, and either DATABRICKS_FM_TOKEN or DATABRICKS_PROFILE, to enable embeddings."
         )
-    return OpenAI(base_url=settings.fm_api_base_url, api_key=settings.fm_api_token)
+    try:
+        token = resolve_bearer_token(settings)
+    except FMAuthNotConfigured as exc:
+        raise EmbeddingsNotConfigured(str(exc)) from exc
+    return OpenAI(base_url=settings.fm_api_base_url, api_key=token)
 
 
 def embed_texts(texts: list[str], settings: Settings | None = None) -> list[list[float]]:

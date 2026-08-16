@@ -133,6 +133,8 @@ with mid:
                 elif not paper.get("abstract"):
                     st.warning("No abstract to summarize.")
                 else:
+                    st.caption("⏳ First summary can take a few seconds — stay on this item until it finishes, "
+                               "switching to something else will restart it.")
                     with st.spinner("Summarizing..."):
                         try:
                             resp = chat(
