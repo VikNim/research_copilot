@@ -65,8 +65,31 @@ def test_search_works_live():
     assert top["id"].startswith("W")
     assert top["title"]
     assert isinstance(top["cited_by_count"], int)
-    # sorted by cited_by_count desc, as requested
-    assert results == sorted(results, key=lambda p: p["cited_by_count"], reverse=True)
+    # no `sort` passed -> OpenAlex's own relevance ranking, not a forced citation
+    # sort (see search_works' docstring for why: citation-sorting server-side
+    # silently drops relevant-but-less-cited papers from the pool entirely,
+    # confirmed live with a "caching" search returning XGBoost/GANs ahead of
+    # actual caching papers). The UI's client-side "sort by citations" is a
+    # separate, correct place for that ordering — re-sorting an already-relevant set.
+
+
+@pytest.mark.integration
+def test_search_relevance_not_dominated_by_unrelated_highly_cited_papers():
+    """Regression test for the exact bug a user caught by comparing our results
+    against Elicit/Consensus/Semantic Scholar for "Caching": with the old forced
+    `sort=cited_by_count:desc`, results were XGBoost (51k+ citations), GANs, MPI,
+    and other hyper-cited papers that merely mention caching in passing — none
+    of which are actually about caching. Every one of the 15 competitor results
+    for the same query was genuinely on-topic."""
+    client = OpenAlexClient()
+    results = client.search_works("caching", per_page=15)
+
+    titles = [r["title"] for r in results]
+    known_bad_matches = {"XGBoost", "Generative Adversarial Networks", "MPI: A Message-Passing Interface Standard"}
+    assert not (set(titles) & known_bad_matches), f"unrelated highly-cited papers leaked back in: {titles}"
+
+    on_topic = sum(1 for t in titles if "cach" in t.lower())
+    assert on_topic >= 10, f"expected most of 15 results to mention caching in the title, got {on_topic}: {titles}"
 
 
 @pytest.mark.integration

@@ -69,21 +69,32 @@ class OpenAlexClient:
         query: str,
         per_page: int = 10,
         filters: dict[str, str] | None = None,
+        sort: str | None = None,
     ) -> list[dict]:
         """Filtered list request: title/abstract match plus any extra filters
-        (e.g. `publication_year`, `topics.id`). 10 credits, not 1,000."""
+        (e.g. `publication_year`, `topics.id`). 10 credits, not 1,000.
+
+        No `sort` by default — OpenAlex's own relevance ranking runs, which is
+        what actually determines which papers make it into the candidate pool
+        at all. An earlier version hardcoded `cited_by_count:desc` here, which
+        doesn't re-order an already-relevant set (that's what the UI's "sort
+        by citations" option is for) — it *replaces* relevance ranking with raw
+        citation count before anything downstream ever sees the results,
+        silently dropping genuinely on-topic papers in favor of unrelated
+        highly-cited ones that merely mention the query term once. Confirmed
+        live: searching "caching" returned XGBoost and GANs ahead of actual
+        caching papers with the forced sort; removing it made all 15 results
+        genuinely about caching. Only pass `sort` explicitly if a caller has a
+        real reason to want OpenAlex's server-side ordering instead of relevance."""
         filter_clauses = [f"title_and_abstract.search:{query}"]
         for key, value in (filters or {}).items():
             filter_clauses.append(f"{key}:{value}")
 
-        data = self._get(
-            "/works",
-            {
-                "filter": ",".join(filter_clauses),
-                "per_page": per_page,
-                "sort": "cited_by_count:desc",
-            },
-        )
+        params = {"filter": ",".join(filter_clauses), "per_page": per_page}
+        if sort:
+            params["sort"] = sort
+
+        data = self._get("/works", params)
         return [normalize_work(w) for w in data.get("results", [])]
 
     def get_work(self, openalex_id: str) -> dict:
