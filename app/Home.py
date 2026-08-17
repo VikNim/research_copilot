@@ -9,6 +9,8 @@ load_dotenv()
 
 from research_copilot import auth  # noqa: E402
 from research_copilot.config import get_settings  # noqa: E402
+from research_copilot.db import session_scope  # noqa: E402
+from research_copilot.repositories import goals as goals_repo  # noqa: E402
 from research_copilot.validation import validate_search_query  # noqa: E402
 
 st.set_page_config(page_title="Research Copilot", page_icon="\U0001f9ed", layout="centered")
@@ -22,7 +24,7 @@ if not settings.has_db:
         icon="⚠️",
     )
 
-auth.render_header("Research Copilot")
+user = auth.render_header("Research Copilot")
 
 st.write("")
 st.write("")
@@ -41,6 +43,18 @@ if submitted:
     if not is_valid:
         st.error(error)
     else:
-        st.session_state["search_query"] = query.strip()
+        clean_query = query.strip()
+        st.session_state["search_query"] = clean_query
         st.session_state.pop("search_results", None)  # force a re-fetch on Screen 2
+
+        # A search *is* stating a learning goal in plain language — record it so a
+        # collection saved from this search can be linked back to what prompted it
+        # (collections.learning_goal_id). Anonymous searches don't get one; there's
+        # no user_id to attach it to, and nothing downstream needs it until Save.
+        st.session_state.pop("learning_goal_id", None)
+        if user is not None and settings.has_db:
+            with session_scope() as session:
+                goal = goals_repo.get_or_create_goal(session, user_id=user.id, title=clean_query)
+                st.session_state["learning_goal_id"] = str(goal.id)
+
         st.switch_page("pages/1_Workspace.py")

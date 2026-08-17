@@ -144,3 +144,24 @@ def test_notes_two_scopes_paper_and_collection(db_session):
 
     assert [n.content for n in paper_notes] == ["about this paper"]
     assert [n.content for n in collection_notes] == ["about the topic"]
+
+
+@requires_db
+def test_search_creates_learning_goal_and_links_to_saved_collection(db_session):
+    """Closes a real gap: learning_goals existed in the schema since day one but
+    no UI flow ever wrote to it. Screen 1's search is the actual "state a
+    learning goal in plain language" moment — this is what get_or_create_goal
+    (called from Home.py on every valid search) plus Save Collection passing
+    learning_goal_id through are meant to produce."""
+    user = users_repo.upsert_user(db_session, google_sub="sub-7", email="g@example.com", display_name="G", avatar_url=None)
+
+    goal1 = goals_repo.get_or_create_goal(db_session, user_id=user.id, title="Understand attention mechanisms")
+    goal2 = goals_repo.get_or_create_goal(db_session, user_id=user.id, title="understand attention mechanisms  ")
+    assert goal1.id == goal2.id  # repeat/near-identical search reuses the goal, doesn't fork one
+
+    collection = collections_repo.create_collection(
+        db_session, user_id=user.id, name="Attention Papers", learning_goal_id=goal1.id
+    )
+    assert collection.learning_goal_id == goal1.id
+    assert collection.learning_goal.title == "Understand attention mechanisms"
+    assert [g.id for g in goals_repo.list_goals_for_user(db_session, user.id)] == [goal1.id]

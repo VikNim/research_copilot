@@ -67,7 +67,7 @@ else:
 
         if st.button("Generate reading plan"):
             try:
-                result = generate_reading_plan_for_collection(session, str(collection_id))
+                result = generate_reading_plan_for_collection(session, str(collection_id), user.id)
                 st.session_state["last_plan"] = result["plan"]
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Couldn't generate a plan: {exc}")
@@ -80,7 +80,7 @@ else:
         collection_notes = notes_repo.list_for_collection(session, user_id=user.id, collection_id=collection_id)
         for n in collection_notes:
             st.caption(f"{n.created_at:%Y-%m-%d}: {n.content}")
-        new_note = st.text_input("Add a collection note", key="new_collection_note")
+        new_note = st.text_input("Add a collection note", key="new_collection_note", max_chars=20000)
         if st.button("Add note", key="add_collection_note") and new_note.strip():
             notes_repo.add_note(session, user_id=user.id, collection_id=collection_id, content=new_note.strip())
             st.rerun()
@@ -118,7 +118,7 @@ else:
                     paper_notes = notes_repo.list_for_paper(session, user_id=user.id, paper_id=paper.id)
                     for n in paper_notes:
                         st.caption(f"{n.created_at:%Y-%m-%d}: {n.content}")
-                    note_text = st.text_input("Add a note", key=f"note_input_{paper.id}")
+                    note_text = st.text_input("Add a note", key=f"note_input_{paper.id}", max_chars=20000)
                     if st.button("Add", key=f"note_add_{paper.id}") and note_text.strip():
                         notes_repo.add_note(session, user_id=user.id, paper_id=paper.id, content=note_text.strip())
                         st.rerun()

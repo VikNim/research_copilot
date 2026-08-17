@@ -81,9 +81,12 @@ def _normalize_db_paper(p) -> dict:
 
 
 active_collection = None
-if active_collection_id is not None and settings.has_db:
+if active_collection_id is not None and settings.has_db and user is not None:
     with session_scope() as session:
-        c = collections_repo.get_collection(session, active_collection_id)
+        # get_owned_collection, not get_collection: active_collection_id comes from
+        # session_state, which — while not directly user-editable in normal use —
+        # shouldn't be trusted as proof of ownership on its own. See collections_repo.
+        c = collections_repo.get_owned_collection(session, active_collection_id, user.id)
         if c is not None:
             active_collection = {"id": c.id, "name": c.name}
             # First time landing here with this collection: open every paper it
@@ -96,6 +99,12 @@ if active_collection_id is not None and settings.has_db:
                     )
                 if st.session_state["open_items"]:
                     st.session_state["active_item"] = 0
+        else:
+            # Ownership check failed (or the id no longer exists) — invalidate it
+            # everywhere on this page, not just for display. Without this, later
+            # code (e.g. _add_to_collection) would still trust the raw id for writes.
+            st.session_state.pop("active_collection_id", None)
+            active_collection_id = None
 
 if active_collection:
     st.caption(f"Working in collection **{active_collection['name']}** — search below to add more papers to it.")
@@ -281,7 +290,12 @@ with mid:
                     "True click-and-drag highlighting needs a custom browser component — "
                     "trim this down to the part you want to keep instead."
                 )
-                excerpt = st.text_area("Excerpt", value=item["summary"], key=f"excerpt_{paper['id']}", height=120)
+                excerpt = st.text_area(
+                    # 19970, not 20000: leaves room for the "AI summary: [excerpt] "
+                    # prefix _add_to_collection adds before this hits the notes
+                    # table's 20000-char CHECK constraint (see models.py).
+                    "Excerpt", value=item["summary"], key=f"excerpt_{paper['id']}", height=120, max_chars=19970
+                )
                 if st.button("Save excerpt", key=f"save_excerpt_{paper['id']}") and excerpt.strip():
                     _add_to_collection(paper, summary=f"[excerpt] {excerpt.strip()}")
                     st.rerun()
@@ -306,7 +320,7 @@ with mid:
                     )
                 st.rerun()
 
-            note_text = st.text_input("Add a note", key=f"ws_note_{paper['id']}")
+            note_text = st.text_input("Add a note", key=f"ws_note_{paper['id']}", max_chars=20000)
             if st.button("Add note", key=f"ws_note_btn_{paper['id']}") and note_text.strip():
                 with session_scope() as session:
                     notes_repo.add_note(session, user_id=user.id, paper_id=paper["id"], content=note_text.strip())
@@ -346,7 +360,8 @@ with right:
 
         st.divider()
         collection_name = st.text_input(
-            "Collection name", value=st.session_state.get("search_query", "New Collection").title()
+            "Collection name", value=st.session_state.get("search_query", "New Collection").title(),
+            max_chars=300,
         )
 
         existing_match = None
@@ -373,7 +388,11 @@ with right:
                         if existing_match and merge_into_existing:
                             collection = collections_repo.get_collection(session, existing_match.id)
                         else:
-                            collection = collections_repo.create_collection(session, user_id=user.id, name=collection_name)
+                            goal_id_raw = st.session_state.get("learning_goal_id")
+                            collection = collections_repo.create_collection(
+                                session, user_id=user.id, name=collection_name,
+                                learning_goal_id=uuid.UUID(goal_id_raw) if goal_id_raw else None,
+                            )
                         for paper in staged.values():
                             saved = papers_repo.upsert_paper(session, paper)
                             collections_repo.add_paper(session, collection_id=collection.id, paper_id=saved.id)

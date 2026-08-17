@@ -135,8 +135,26 @@ def _tool_search_papers(session: Session, args: dict) -> dict:
     }
 
 
-def _tool_list_collection_papers(session: Session, args: dict) -> dict:
-    papers = collections_repo.list_papers_in_collection(session, uuid.UUID(args["collection_id"]))
+class ToolAuthorizationError(RuntimeError):
+    """Raised (and turned into a plain {"error": ...} tool result, never a
+    crash) when a tool argument names a collection the calling user doesn't
+    own. Every tool below that takes a collection_id goes through
+    _require_owned_collection — the LLM's tool-call arguments are user-
+    influenced input (a user could type someone else's id directly into the
+    chat), not a trusted internal value, so ownership is checked at this
+    boundary every time rather than assumed from how the id usually arrives."""
+
+
+def _require_owned_collection(session: Session, collection_id_str: str, user_id: uuid.UUID) -> uuid.UUID:
+    collection_id = uuid.UUID(collection_id_str)
+    if collections_repo.get_owned_collection(session, collection_id, user_id) is None:
+        raise ToolAuthorizationError(f"No collection {collection_id_str} found for this user.")
+    return collection_id
+
+
+def _tool_list_collection_papers(session: Session, args: dict, user_id: uuid.UUID) -> dict:
+    collection_id = _require_owned_collection(session, args["collection_id"], user_id)
+    papers = collections_repo.list_papers_in_collection(session, collection_id)
     return {
         "papers": [
             {"id": p.id, "title": p.title, "year": p.publication_year, "cited_by_count": p.cited_by_count}
@@ -161,14 +179,14 @@ def _tool_retrieve_evidence(session: Session, args: dict) -> dict:
     return {"evidence": evidence}
 
 
-def generate_reading_plan_for_collection(session: Session, collection_id: str) -> dict:
+def generate_reading_plan_for_collection(session: Session, collection_id: str, user_id: uuid.UUID) -> dict:
     """Public entry point for triggering the sequencer directly from the UI
     (Screen 3's "Generate reading plan" button), without going through the chat loop."""
-    return _tool_generate_reading_plan(session, {"collection_id": collection_id})
+    return _tool_generate_reading_plan(session, {"collection_id": collection_id}, user_id)
 
 
-def _tool_generate_reading_plan(session: Session, args: dict) -> dict:
-    collection_id = uuid.UUID(args["collection_id"])
+def _tool_generate_reading_plan(session: Session, args: dict, user_id: uuid.UUID) -> dict:
+    collection_id = _require_owned_collection(session, args["collection_id"], user_id)
     papers = collections_repo.list_papers_in_collection(session, collection_id)
     paper_dicts = [
         {
@@ -194,15 +212,14 @@ def _tool_generate_reading_plan(session: Session, args: dict) -> dict:
     }
 
 
-def _tool_add_to_collection(session: Session, args: dict) -> dict:
-    link = collections_repo.add_paper(
-        session, collection_id=uuid.UUID(args["collection_id"]), paper_id=args["paper_id"]
-    )
+def _tool_add_to_collection(session: Session, args: dict, user_id: uuid.UUID) -> dict:
+    collection_id = _require_owned_collection(session, args["collection_id"], user_id)
+    link = collections_repo.add_paper(session, collection_id=collection_id, paper_id=args["paper_id"])
     return {"collection_id": str(link.collection_id), "paper_id": link.paper_id, "position": link.position}
 
 
 def _tool_recommend_next(session: Session, args: dict, user_id: uuid.UUID) -> dict:
-    collection_id = uuid.UUID(args["collection_id"])
+    collection_id = _require_owned_collection(session, args["collection_id"], user_id)
     ordered = [p.id for p in collections_repo.list_papers_in_collection(session, collection_id)]
     next_id = progress_repo.recommend_next(session, user_id=user_id, collection_id=collection_id, ordered_paper_ids=ordered)
     return {"next_paper_id": next_id}
@@ -212,13 +229,13 @@ def _dispatch(session: Session, user_id: uuid.UUID, name: str, args: dict) -> di
     if name == "search_papers":
         return _tool_search_papers(session, args)
     if name == "list_collection_papers":
-        return _tool_list_collection_papers(session, args)
+        return _tool_list_collection_papers(session, args, user_id)
     if name == "retrieve_evidence":
         return _tool_retrieve_evidence(session, args)
     if name == "generate_reading_plan":
-        return _tool_generate_reading_plan(session, args)
+        return _tool_generate_reading_plan(session, args, user_id)
     if name == "add_to_collection":
-        return _tool_add_to_collection(session, args)
+        return _tool_add_to_collection(session, args, user_id)
     if name == "recommend_next":
         return _tool_recommend_next(session, args, user_id)
     raise ValueError(f"Unknown tool: {name}")
@@ -256,7 +273,17 @@ def run_agent(
         for call in choice.tool_calls:
             args = json.loads(call.function.arguments or "{}")
             try:
-                result = _dispatch(session, user_id, call.function.name, args)
+                # SAVEPOINT per tool call: without this, a failed DB statement (e.g.
+                # a foreign-key violation) leaves Postgres refusing every further
+                # command on this session until rollback — even though the error is
+                # caught here and turned into a clean {"error": ...} for the model,
+                # every *subsequent* tool call in this same turn would then fail too,
+                # with a confusing "transaction aborted" message instead of its own
+                # real error. Proven live: one bad add_to_collection call broke a
+                # completely unrelated list_collection_papers call right after it,
+                # in the same conversation turn, without this.
+                with session.begin_nested():
+                    result = _dispatch(session, user_id, call.function.name, args)
             except Exception as exc:  # noqa: BLE001 - surfaced to the model, not swallowed
                 result = {"error": str(exc)}
             messages.append(

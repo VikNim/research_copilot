@@ -38,7 +38,21 @@ def list_collections_for_user(session: Session, user_id: uuid.UUID) -> list[Coll
 
 
 def get_collection(session: Session, collection_id: uuid.UUID) -> Collection | None:
+    """Unscoped — the caller is responsible for checking .user_id before trusting
+    or displaying the result (see get_owned_collection for the checked version,
+    which every caller working from a not-fully-trusted collection_id should use)."""
     return session.get(Collection, collection_id)
+
+
+def get_owned_collection(session: Session, collection_id: uuid.UUID, user_id: uuid.UUID) -> Collection | None:
+    """Returns the collection only if it belongs to user_id — None both when it
+    doesn't exist AND when it belongs to someone else, deliberately indistinguishable
+    so a caller can't use this to probe whether an id exists at all. Use this (not
+    get_collection) anywhere a collection_id arrives from a source that isn't
+    already provably scoped to the current user — session_state that could in
+    principle be tampered with, or arguments an LLM tool call supplies."""
+    stmt = select(Collection).where(Collection.id == collection_id, Collection.user_id == user_id)
+    return session.scalar(stmt)
 
 
 def add_paper(session: Session, *, collection_id: uuid.UUID, paper_id: str, position: int | None = None) -> CollectionPaper:

@@ -75,6 +75,15 @@ class LearningGoal(Base):
 
 class Paper(Base):
     __tablename__ = "papers"
+    __table_args__ = (
+        # HNSW, not ivfflat: ivfflat needs representative data present *before* the
+        # index is built to cluster well, which doesn't fit a cache that grows one
+        # search at a time. HNSW builds incrementally and doesn't have that problem.
+        Index(
+            "ix_papers_embedding_hnsw", "embedding",
+            postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # OpenAlex Work ID
     doi: Mapped[str | None] = mapped_column(String)
@@ -120,7 +129,15 @@ class PaperAuthor(Base):
 
 class Collection(Base):
     __tablename__ = "collections"
-    __table_args__ = (Index("ix_collections_user_id", "user_id"),)
+    __table_args__ = (
+        Index("ix_collections_user_id", "user_id"),
+        # Defense in depth, not the primary guard — the UI should validate before
+        # this is ever hit, but a DB-level cap means a bypassed/forgotten app-level
+        # check (or a future direct-write feature) still can't write an unbounded
+        # string. 300/5000 are generous for a name/description, not exact UX limits.
+        CheckConstraint("char_length(name) <= 300", name="ck_collection_name_length"),
+        CheckConstraint("description is null or char_length(description) <= 5000", name="ck_collection_description_length"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -175,6 +192,7 @@ class Note(Base):
     __tablename__ = "notes"
     __table_args__ = (
         CheckConstraint("paper_id is not null or collection_id is not null", name="ck_notes_scoped"),
+        CheckConstraint("char_length(content) <= 20000", name="ck_notes_content_length"),  # defense in depth, see Collection
         Index("ix_notes_user_id", "user_id"),
     )
 

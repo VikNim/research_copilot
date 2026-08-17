@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 _engine: Engine | None = None
 _SessionFactory: sessionmaker[Session] | None = None
 
+# Explicit, not left to SQLAlchemy's defaults (5/10) — Streamlit runs one process
+# shared across every connected session, all pulling from this one pool, so an
+# unbounded pool means an unbounded number of open DB connections under load.
+# 20 total (10 idle + 10 burst) is comfortably above what a single-instance
+# prototype needs and comfortably below typical Postgres/Lakebase connection caps.
+POOL_SIZE = 10
+POOL_MAX_OVERFLOW = 10
+
 
 class DatabaseNotConfigured(RuntimeError):
     """Raised when neither DATABASE_URL nor Lakebase settings are present."""
@@ -95,7 +103,9 @@ def get_engine(settings: Settings | None = None) -> Engine:
 
     if settings.has_local_db:
         logger.info("Connecting via DATABASE_URL (local/dev path)")
-        _engine = create_engine(settings.database_url, pool_pre_ping=True)
+        _engine = create_engine(
+            settings.database_url, pool_pre_ping=True, pool_size=POOL_SIZE, max_overflow=POOL_MAX_OVERFLOW
+        )
     elif settings.has_lakebase_credential_flow:
         logger.info("Connecting to Lakebase via minted OAuth credential")
         _engine = create_engine(
@@ -103,6 +113,8 @@ def get_engine(settings: Settings | None = None) -> Engine:
             creator=_build_lakebase_credential_creator(settings),
             pool_pre_ping=True,
             pool_recycle=1800,  # credentials expire at 60 min; refresh well before that
+            pool_size=POOL_SIZE,
+            max_overflow=POOL_MAX_OVERFLOW,
         )
     elif settings.has_lakebase_static_token:
         logger.warning("Connecting to Lakebase with a static pasted token — expires in ~1hr, no refresh")
@@ -110,6 +122,8 @@ def get_engine(settings: Settings | None = None) -> Engine:
             "postgresql+psycopg://",
             creator=_build_lakebase_static_creator(settings),
             pool_pre_ping=True,
+            pool_size=POOL_SIZE,
+            max_overflow=POOL_MAX_OVERFLOW,
         )
     else:
         raise DatabaseNotConfigured(
