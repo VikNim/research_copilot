@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from research_copilot import theme
 from research_copilot.db import session_scope
 from research_copilot.models import User
 from research_copilot.repositories.users import upsert_user
@@ -33,13 +34,19 @@ def current_user() -> User | None:
         return user
 
 
+def _centered_title(site_name: str) -> None:
+    st.markdown(
+        f"<h1 style='text-align:center; color:{theme.header_text_color()}; "
+        "margin:0.25rem 0 0.75rem 0;'>" + site_name + "</h1>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_header(site_name: str, show_auth_buttons: bool = True) -> User | None:
-    """Renders the "Company Name" + auth-buttons header used on Screens 1 and 2.
+    """Renders the auth-buttons row + centered site title used on Screens 1 and 2.
     Returns the current user (or None) so the caller can branch on it."""
     user = current_user()
-    left, right = st.columns([3, 1])
-    with left:
-        st.subheader(site_name)
+    spacer, right, toggle_col = st.columns([3, 1, 0.4])
     with right:
         if user is None and show_auth_buttons:
             b1, b2 = st.columns(2)
@@ -47,6 +54,9 @@ def render_header(site_name: str, show_auth_buttons: bool = True) -> User | None
             b2.button("Sign up", on_click=st.login, use_container_width=True)
         elif user is not None:
             st.button(f"Log out ({user.display_name or user.email})", on_click=st.logout)
+    with toggle_col:
+        theme.theme_toggle_button(key="theme_toggle_header")
+    _centered_title(site_name)
     return user
 
 
@@ -54,7 +64,10 @@ def require_login(site_name: str) -> User:
     """Route guard for Screen 3 (User Profile page) — no auth buttons shown here;
     an unauthenticated visitor is redirected back to the landing page instead."""
     user = current_user()
-    st.subheader(site_name)
+    spacer, toggle_col = st.columns([4, 0.4])
+    with toggle_col:
+        theme.theme_toggle_button(key="theme_toggle_require_login")
+    _centered_title(site_name)
     if user is None:
         st.info("Log in to see your collections.")
         st.button("Log in", on_click=st.login)

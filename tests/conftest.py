@@ -8,7 +8,7 @@ import pytest
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-load_dotenv()
+load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
 from research_copilot.db import get_engine, init_db  # noqa: E402
 
@@ -21,7 +21,11 @@ requires_fm_api = pytest.mark.skipif(
 
 @pytest.fixture(scope="session", autouse=True)
 def _init_schema():
-    if os.environ.get("DATABASE_URL"):
+    # Skip when DATABASE_URL points at a least-privilege role (e.g. app_user on
+    # Lakebase) that can't run DDL by design — schema there is migrated by hand
+    # as the owner. Set SKIP_DB_INIT=1 in that case; local dev Postgres (where
+    # the connecting role owns the schema) keeps auto-initializing as before.
+    if os.environ.get("DATABASE_URL") and not os.environ.get("SKIP_DB_INIT"):
         init_db()
 
 

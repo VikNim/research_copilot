@@ -20,6 +20,19 @@ class LLMNotConfigured(RuntimeError):
     pass
 
 
+STYLE_DIRECTIVE = "Never use em dashes (—) in your writing. Use a comma, period, or parentheses instead."
+
+
+def _with_style_directive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Applied centrally here rather than at each call site (Workspace.py's
+    summarizer, agent.py's tool loop, study_buddy.py's explanations) so the
+    style rule can't be missed on a new one."""
+    if messages and messages[0].get("role") == "system":
+        first = {**messages[0], "content": f"{messages[0]['content']}\n\n{STYLE_DIRECTIVE}"}
+        return [first, *messages[1:]]
+    return [{"role": "system", "content": STYLE_DIRECTIVE}, *messages]
+
+
 def _client(settings: Settings) -> OpenAI:
     if not settings.has_fm_api:
         raise LLMNotConfigured(
@@ -39,7 +52,7 @@ def chat(
 ) -> Any:
     settings = settings or get_settings()
     client = _client(settings)
-    kwargs: dict[str, Any] = {"model": settings.llm_model, "messages": messages}
+    kwargs: dict[str, Any] = {"model": settings.llm_model, "messages": _with_style_directive(messages)}
     if tools:
         kwargs["tools"] = tools
     return client.chat.completions.create(**kwargs)

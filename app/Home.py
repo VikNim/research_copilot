@@ -5,15 +5,16 @@ from __future__ import annotations
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
-from research_copilot import auth  # noqa: E402
+from research_copilot import auth, theme  # noqa: E402
 from research_copilot.config import get_settings  # noqa: E402
 from research_copilot.db import session_scope  # noqa: E402
 from research_copilot.repositories import goals as goals_repo  # noqa: E402
 from research_copilot.validation import validate_search_query  # noqa: E402
 
 st.set_page_config(page_title="Research Copilot", page_icon="\U0001f9ed", layout="centered")
+theme.apply_theme()
 
 settings = get_settings()
 if not settings.has_db:
@@ -28,15 +29,17 @@ user = auth.render_header("Research Copilot")
 
 st.write("")
 st.write("")
-st.markdown("<h2 style='text-align:center;'>What do you want to learn?</h2>", unsafe_allow_html=True)
 
-with st.form("search_form"):
-    query = st.text_input(
-        "Topic",
-        placeholder="Enter the topic you want to research or learn about",
-        label_visibility="collapsed",
-    )
-    submitted = st.form_submit_button("Search", use_container_width=True)
+with st.container(key="panel-tint-1"):
+    st.markdown("<h2 style='text-align:center;'>What do you want to learn?</h2>", unsafe_allow_html=True)
+
+    with st.form("search_form"):
+        query = st.text_input(
+            "Topic",
+            placeholder="Enter the topic you want to research or learn about",
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button("Search", use_container_width=True)
 
 if submitted:
     is_valid, error = validate_search_query(query)
