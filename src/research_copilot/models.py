@@ -198,3 +198,93 @@ class PaperChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+
+
+# --- Study Buddy: a second, separate conversational mode alongside the workspace
+# above, not a replacement for it. A concept card belongs to one learning goal;
+# "papers"/"authors" above are reused as-is for the internal (never user-facing)
+# evidence log — no duplicate paper cache needed.
+
+
+class StudyConcept(Base):
+    """One plain-language topic card in a learning goal's journey. User-scoped
+    via learning_goal_id, not shared/cached like papers are — each user's
+    journey through "how CRISPR works" is their own, even if the underlying
+    papers are the same shared cache rows everyone else's search also hits."""
+
+    __tablename__ = "study_concepts"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('not_started','in_progress','understood','struggling')", name="ck_concept_status"
+        ),
+        Index("ix_study_concepts_learning_goal_id", "learning_goal_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    learning_goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("learning_goals.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String, default="not_started")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    explanations: Mapped[list["ConceptExplanation"]] = relationship(back_populates="concept", cascade="all, delete-orphan")
+    evidence: Mapped[list["ConceptEvidence"]] = relationship(back_populates="concept", cascade="all, delete-orphan")
+    checks: Mapped[list["ComprehensionCheck"]] = relationship(back_populates="concept", cascade="all, delete-orphan")
+
+
+class ConceptExplanation(Base):
+    """One generated explanation at one layer. `variant` increments each time
+    "explain differently" is used, so past attempts stay around (useful for
+    eval/debugging) instead of being overwritten."""
+
+    __tablename__ = "concept_explanations"
+    __table_args__ = (
+        CheckConstraint("layer in (1,2,3)", name="ck_explanation_layer"),
+        Index("ix_concept_explanations_concept_id", "concept_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    concept_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("study_concepts.id"), nullable=False)
+    layer: Mapped[int] = mapped_column(Integer, nullable=False)
+    variant: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    reading_grade_level: Mapped[float | None] = mapped_column()  # Flesch-Kincaid grade, eval hook
+    faithfulness_ok: Mapped[bool | None] = mapped_column()  # LLM-judge pass/fail, eval hook
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    concept: Mapped["StudyConcept"] = relationship(back_populates="explanations")
+
+
+class ConceptEvidence(Base):
+    """Internal evidence log — never shown directly; the citation chip in the UI
+    is generated from this, and "where did this come from?" reads from it."""
+
+    __tablename__ = "concept_evidence"
+    __table_args__ = (Index("ix_concept_evidence_concept_id", "concept_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    concept_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("study_concepts.id"), nullable=False)
+    paper_id: Mapped[str] = mapped_column(String, ForeignKey("papers.id"), nullable=False)
+    snippet: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    concept: Mapped["StudyConcept"] = relationship(back_populates="evidence")
+    paper: Mapped["Paper"] = relationship()
+
+
+class ComprehensionCheck(Base):
+    """A lightweight "does this make sense?" signal per concept — the spec
+    explicitly allows this simpler form instead of scored quiz questions;
+    that's the v1 here. `understood=False` is the signal to re-explain simpler
+    or insert a prerequisite, not to show a harder paper."""
+
+    __tablename__ = "comprehension_checks"
+    __table_args__ = (Index("ix_comprehension_checks_concept_id", "concept_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    concept_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("study_concepts.id"), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    understood: Mapped[bool | None] = mapped_column()  # null until answered
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    concept: Mapped["StudyConcept"] = relationship(back_populates="checks")

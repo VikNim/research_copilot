@@ -87,19 +87,23 @@ def test_collection_paper_order_and_progress_and_next(db_session):
 
 @requires_db
 def test_set_status_keeps_progress_pct_consistent(db_session):
+    # a real collection_id — matches every actual call site in the app; see
+    # set_status's docstring for why collection_id=None doesn't upsert cleanly.
     user = users_repo.upsert_user(db_session, google_sub="sub-6", email="f@example.com", display_name="F", avatar_url=None)
     papers_repo.upsert_paper(db_session, _fake_paper("WP1", "Status Paper", 2022, 1))
+    collection = collections_repo.create_collection(db_session, user_id=user.id, name="Status Test Collection")
 
-    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="in_progress")
+    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="in_progress", collection_id=collection.id)
     assert p.progress_pct == 50
     assert p.started_at is not None
 
-    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="done")
+    p = progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="done", collection_id=collection.id)
     assert p.progress_pct == 100
     assert p.completed_at is not None
+    assert p.started_at is not None  # preserved from the first call, not cleared
 
     with pytest.raises(ValueError):
-        progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="halfway")
+        progress_repo.set_status(db_session, user_id=user.id, paper_id="WP1", status="halfway", collection_id=collection.id)
 
 
 @requires_db

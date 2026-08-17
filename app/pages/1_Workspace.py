@@ -24,9 +24,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from research_copilot import auth  # noqa: E402
+from research_copilot import agent, auth, semantic  # noqa: E402
 from research_copilot.config import get_settings  # noqa: E402
 from research_copilot.db import DatabaseNotConfigured, session_scope  # noqa: E402
+from research_copilot.embeddings import EmbeddingsNotConfigured  # noqa: E402
 from research_copilot.llm import LLMNotConfigured, chat  # noqa: E402
 from research_copilot.openalex_client import OpenAlexClient, OpenAlexError  # noqa: E402
 from research_copilot.repositories import collections as collections_repo  # noqa: E402
@@ -55,12 +56,29 @@ st.session_state.setdefault("staged_papers", {})  # paper_id -> normalized paper
 if "search_query" in st.session_state and "search_results" not in st.session_state:
     try:
         client = OpenAlexClient()
-        st.session_state["search_results"] = client.search_works(st.session_state["search_query"], per_page=15)
+        results = client.search_works(st.session_state["search_query"], per_page=15)
+        if settings.has_db:
+            # Cache-through: every OpenAlex result gets a papers row immediately (cheap —
+            # no embedding call here), so it's ready for semantic ranking or a collection
+            # add without a second fetch. See semantic.py for the embedding step, which
+            # only runs when semantic ranking is actually requested.
+            with session_scope() as session:
+                for r in results:
+                    papers_repo.upsert_paper(session, r)
+        st.session_state["search_results"] = results
     except OpenAlexError as exc:
         st.error(f"OpenAlex search failed: {exc}")
         st.session_state["search_results"] = []
 
 user = auth.render_header("Research Copilot")
+
+def _normalize_db_paper(p) -> dict:
+    return {
+        "id": p.id, "title": p.title, "abstract": p.abstract,
+        "publication_year": p.publication_year, "oa_pdf_url": p.oa_pdf_url,
+        "authors": [{"display_name": link.author.display_name} for link in p.authors],
+    }
+
 
 active_collection = None
 if active_collection_id is not None and settings.has_db:
@@ -68,6 +86,16 @@ if active_collection_id is not None and settings.has_db:
         c = collections_repo.get_collection(session, active_collection_id)
         if c is not None:
             active_collection = {"id": c.id, "name": c.name}
+            # First time landing here with this collection: open every paper it
+            # already has (up to the cap) so notes/summaries are visible immediately,
+            # rather than requiring a click per paper just to see what's there.
+            if not st.session_state["open_items"]:
+                for p in collections_repo.list_papers_in_collection(session, active_collection_id)[:MAX_OPEN_ITEMS]:
+                    st.session_state["open_items"].append(
+                        {"paper_id": p.id, "mode": "read", "paper": _normalize_db_paper(p), "summary": None}
+                    )
+                if st.session_state["open_items"]:
+                    st.session_state["active_item"] = 0
 
 if active_collection:
     st.caption(f"Working in collection **{active_collection['name']}** — search below to add more papers to it.")
@@ -92,6 +120,12 @@ def _open_item(paper: dict, mode: str) -> None:
         return
     items.append({"paper_id": paper["id"], "mode": mode, "paper": paper, "summary": None})
     st.session_state["active_item"] = len(items) - 1
+
+    if mode == "read" and active_collection_id is not None and user is not None:
+        with session_scope() as session:
+            progress_repo.mark_started(
+                session, user_id=user.id, paper_id=paper["id"], collection_id=active_collection_id
+            )
 
 
 def _add_to_collection(paper: dict, summary: str | None = None) -> None:
@@ -122,13 +156,32 @@ with left:
     if not results:
         st.caption("Search from the landing page to find papers" + (" to add here." if active_collection else "."))
     else:
-        sort_by = st.selectbox("Sort by", ["citations", "date", "name"], label_visibility="collapsed")
+        sort_options = ["citations", "date", "name"]
+        if settings.has_fm_api and settings.has_db:
+            sort_options.append("semantic match")
+        sort_by = st.selectbox("Sort by", sort_options, label_visibility="collapsed")
+
         if sort_by == "citations":
             results.sort(key=lambda p: p.get("cited_by_count", 0), reverse=True)
         elif sort_by == "date":
             results.sort(key=lambda p: p.get("publication_year") or 0, reverse=True)
-        else:
+        elif sort_by == "name":
             results.sort(key=lambda p: (p.get("title") or "").lower())
+        else:
+            query = st.session_state.get("search_query", "")
+            cache = st.session_state.setdefault("semantic_rank_cache", {})
+            if query not in cache:
+                with st.spinner("Ranking by meaning, not just keywords..."):
+                    try:
+                        with session_scope() as session:
+                            cache[query] = semantic.semantic_rank(
+                                session, [p["id"] for p in results], query
+                            )
+                    except EmbeddingsNotConfigured as exc:
+                        st.warning(str(exc))
+                        cache[query] = [p["id"] for p in results]
+            order = {pid: i for i, pid in enumerate(cache[query])}
+            results.sort(key=lambda p: order.get(p["id"], len(order)))
 
         for paper in results:
             with st.container(border=True):
@@ -242,6 +295,7 @@ with mid:
             statuses = ["not_started", "in_progress", "done"]
             new_status = st.selectbox(
                 "Reading progress", statuses, index=statuses.index(current_status),
+                format_func=lambda s: progress_repo.STATUS_LABELS[s],
                 key=f"status_{paper['id']}",
             )
             if new_status != current_status:
@@ -274,12 +328,7 @@ with right:
                 c1, c2 = st.columns([5, 1])
                 c1.write(p.title[:38])
                 if c2.button("📖", key=f"cread_{p.id}", help="Read"):
-                    normalized = {
-                        "id": p.id, "title": p.title, "abstract": p.abstract,
-                        "publication_year": p.publication_year, "oa_pdf_url": p.oa_pdf_url,
-                        "authors": [{"display_name": link.author.display_name} for link in p.authors],
-                    }
-                    _open_item(normalized, "read")
+                    _open_item(_normalize_db_paper(p), "read")
                     st.rerun()
         if not collection_papers:
             st.caption("Nothing added yet — use the ⋮ menu on the left.")
@@ -340,3 +389,56 @@ with right:
                     st.page_link("pages/2_Profile.py", label="View in your profile")
                 except DatabaseNotConfigured as exc:
                     st.error(str(exc))
+
+# --- Agent chat: compare/cite/recommend-next over this collection's papers ---
+# Scoped to a loaded collection specifically — retrieve_evidence and recommend_next
+# both need a concrete, bounded paper set to reason over, which "everything the user
+# has ever searched for" isn't. This is the surface for 3 of the 6 tools in agent.py
+# that otherwise have no UI: retrieve_evidence, generate_reading_plan, recommend_next.
+if active_collection and user is not None:
+    st.divider()
+    st.markdown(f"##### Ask the agent about “{active_collection['name']}”")
+    if not settings.has_fm_api:
+        st.info("The agent needs Databricks FM API credentials to hold a conversation.")
+    else:
+        chat_key = str(active_collection_id)
+        chats = st.session_state.setdefault("agent_chats", {})
+        chat_history = chats.setdefault(chat_key, [])
+
+        for msg in chat_history:
+            role = msg.get("role")
+            if role == "user":
+                with st.chat_message("user"):
+                    st.write(msg.get("content", ""))
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    names = ", ".join(tc["function"]["name"] for tc in tool_calls)
+                    st.caption(f"🔧 checked: {names}")
+                if msg.get("content"):
+                    with st.chat_message("assistant"):
+                        st.write(msg["content"])
+            # role == "tool": raw tool output, not shown — the caption above already
+            # says what was used, and the assistant's next message cites what it found.
+
+        prompt = st.chat_input(
+            "Ask it to compare papers, cite evidence, or say what to read next..."
+        )
+        if prompt:
+            with st.spinner("Thinking..."):
+                try:
+                    with session_scope() as session:
+                        chats[chat_key] = agent.run_agent(
+                            session,
+                            user.id,
+                            prompt,
+                            history=chat_history,
+                            context_note=(
+                                f'The active collection_id is "{active_collection_id}" '
+                                f'(name: "{active_collection["name"]}"). Use it for any tool '
+                                "that takes a collection_id unless the user names a different one."
+                            ),
+                        )
+                except LLMNotConfigured as exc:
+                    st.error(str(exc))
+            st.rerun()

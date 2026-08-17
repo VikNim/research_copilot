@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from research_copilot.models import Collection, CollectionPaper, Paper
@@ -41,9 +42,12 @@ def get_collection(session: Session, collection_id: uuid.UUID) -> Collection | N
 
 
 def add_paper(session: Session, *, collection_id: uuid.UUID, paper_id: str, position: int | None = None) -> CollectionPaper:
-    existing = session.get(CollectionPaper, {"collection_id": collection_id, "paper_id": paper_id})
-    if existing:
-        return existing
+    """Idempotent — adding a paper that's already in the collection is a no-op,
+    on purpose: a double-click or the same action fired from two tabs shouldn't
+    error. `ON CONFLICT DO NOTHING` makes that atomic instead of a racy
+    get-then-insert (a rare position tie between two truly simultaneous adds of
+    *different* papers is possible but harmless — worst case a shared reading-order
+    number, not a crash or lost data)."""
     if position is None:
         current_max = session.scalar(
             select(CollectionPaper.position)
@@ -52,10 +56,16 @@ def add_paper(session: Session, *, collection_id: uuid.UUID, paper_id: str, posi
             .limit(1)
         )
         position = (current_max or 0) + 1
-    link = CollectionPaper(collection_id=collection_id, paper_id=paper_id, position=position)
-    session.add(link)
+    stmt = pg_insert(CollectionPaper).values(collection_id=collection_id, paper_id=paper_id, position=position)
+    stmt = stmt.on_conflict_do_nothing(index_elements=[CollectionPaper.collection_id, CollectionPaper.paper_id])
+    session.execute(stmt)
     session.flush()
-    return link
+    # populate_existing: DO NOTHING still needs this on the *first* insert path too,
+    # in case this collection/paper pair's row was loaded earlier in this session
+    # via a different query and would otherwise return a stale identity-mapped copy.
+    return session.get(
+        CollectionPaper, {"collection_id": collection_id, "paper_id": paper_id}, populate_existing=True
+    )
 
 
 def remove_paper(session: Session, *, collection_id: uuid.UUID, paper_id: str) -> None:

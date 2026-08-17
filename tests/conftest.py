@@ -5,11 +5,18 @@ stays empty between runs."""
 import os
 
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-from research_copilot.db import get_engine, init_db
+load_dotenv()
+
+from research_copilot.db import get_engine, init_db  # noqa: E402
 
 requires_db = pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="DATABASE_URL not set")
+requires_fm_api = pytest.mark.skipif(
+    not (os.environ.get("DATABRICKS_FM_BASE_URL") and os.environ.get("DATABRICKS_PROFILE")),
+    reason="Databricks FM API not configured (needs a live `databricks auth login` session)",
+)
 
 
 @pytest.fixture(scope="session", autouse=True)

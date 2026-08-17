@@ -15,6 +15,7 @@ dependencies = [
     "requests>=2.34.2",
     "sqlalchemy>=2.0.52",
     "streamlit[auth]>=1.61.1",
+    "textstat>=0.7.13",
 ]
 
 [build-system]

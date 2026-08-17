@@ -90,10 +90,11 @@ else:
         papers = collections_repo.list_papers_in_collection(session, collection_id)
         progress_by_paper = progress_repo.list_for_collection(session, user_id=user.id, collection_id=collection_id)
 
+        statuses = ["not_started", "in_progress", "done"]
         for paper in papers:
             authors = ", ".join(link.author.display_name for link in paper.authors if link.author.display_name)
             current = progress_by_paper.get(paper.id)
-            current_pct = current.progress_pct if current else 0
+            current_status = current.status if current else "not_started"
 
             with st.container(border=True):
                 c1, c2 = st.columns([3, 1])
@@ -101,15 +102,15 @@ else:
                     st.write(f"**{paper.title}**")
                     st.caption(authors or "Unknown authors")
                 with c2:
-                    new_pct = st.slider(
-                        "Progress", 0, 100, current_pct, step=5,
-                        key=f"pct_{paper.id}", label_visibility="collapsed",
+                    new_status = st.selectbox(
+                        "Progress", statuses, index=statuses.index(current_status),
+                        format_func=lambda s: progress_repo.STATUS_LABELS[s],
+                        key=f"status_{paper.id}", label_visibility="collapsed",
                     )
-                    st.caption(f"{new_pct}% · {progress_repo.status_for_pct(new_pct).replace('_', ' ')}")
-                    if new_pct != current_pct:
-                        progress_repo.set_progress(
+                    if new_status != current_status:
+                        progress_repo.set_status(
                             session, user_id=user.id, paper_id=paper.id,
-                            progress_pct=new_pct, collection_id=collection_id,
+                            status=new_status, collection_id=collection_id,
                         )
                         st.rerun()
 
