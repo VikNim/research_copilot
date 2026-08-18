@@ -93,6 +93,35 @@ def test_search_relevance_not_dominated_by_unrelated_highly_cited_papers():
 
 
 @pytest.mark.integration
+def test_natural_language_topic_does_not_return_zero_results():
+    """Regression test for a real reported bug: the landing page asks for a
+    topic "in plain language," but OpenAlex's cheap filter search ANDs every
+    word together — an 8-word sentence with connective words like "of"/"from"
+    genuinely matched zero papers, and the Workspace showed a blank screen
+    with no explanation. A shorter/cleaner phrasing must still work too (the
+    stopword-stripped retry shouldn't break the common case)."""
+    client = OpenAlexClient()
+
+    broken_query = "point of sales(POS) from data engineering perspective"
+    results = client.search_works(broken_query, per_page=15)
+    assert len(results) > 0, "natural-language phrasing should recover via fallback, not stay empty"
+
+    # the fallback must be genuinely relevant, not the noisy OR-of-common-words
+    # this file's fix deliberately avoided (see search_works' docstring) —
+    # these are real hyper-cited-but-unrelated papers seen leaking in live
+    # when an earlier version of the fallback used cheap OR matching instead.
+    titles = {r["title"] for r in results}
+    known_bad_matches = {
+        "Analysis of Relative Gene Expression Data Using Real-Time Quantitative PCR and the 2(-Delta Delta C(T)) Method",
+        "Trimmomatic: a flexible trimmer for Illumina sequence data",
+    }
+    assert not (titles & known_bad_matches), f"unrelated hyper-cited papers leaked back in: {titles}"
+
+    short_query_results = client.search_works("caching", per_page=5)
+    assert len(short_query_results) > 0, "a query that already works shouldn't be affected by the fallback logic"
+
+
+@pytest.mark.integration
 def test_get_work_live():
     # "Attention Is All You Need" — stable, well-known OpenAlex ID
     client = OpenAlexClient()

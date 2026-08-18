@@ -28,6 +28,25 @@ class OpenAlexError(RuntimeError):
     pass
 
 
+# OpenAlex's cheap filter search (title_and_abstract.search:<query>) matches
+# with an implicit AND across every word in <query> — fine for a short phrase,
+# but this app's own landing page asks for a full topic in plain language
+# ("point of sale systems from a data engineering perspective"), and it's
+# common for no single paper's title+abstract to contain literally every word
+# of an 8-word sentence. Confirmed live: dropping connective words like "of"/
+# "from"/"perspective" turns a real 0-result search into 5 results for the
+# exact same underlying topic. These are stripped before the AND retry below.
+_STOPWORDS = {
+    "a", "an", "the", "of", "from", "in", "on", "at", "for", "with", "about",
+    "into", "to", "and", "or", "is", "are", "was", "were", "be", "as", "by",
+    "how", "what", "why", "does", "do", "this", "that",
+}
+
+
+def _significant_words(query: str) -> list[str]:
+    return [w for w in query.split() if w.lower().strip("()[]{}.,;:!?") not in _STOPWORDS]
+
+
 def reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str | None:
     """OpenAlex ships abstracts as {word: [positions]} rather than plain text
     (a copyright-driven design choice on their end) — rebuild it here."""
@@ -85,16 +104,48 @@ class OpenAlexClient:
         live: searching "caching" returned XGBoost and GANs ahead of actual
         caching papers with the forced sort; removing it made all 15 results
         genuinely about caching. Only pass `sort` explicitly if a caller has a
-        real reason to want OpenAlex's server-side ordering instead of relevance."""
-        filter_clauses = [f"title_and_abstract.search:{query}"]
-        for key, value in (filters or {}).items():
-            filter_clauses.append(f"{key}:{value}")
+        real reason to want OpenAlex's server-side ordering instead of relevance.
 
-        params = {"filter": ",".join(filter_clauses), "per_page": per_page}
-        if sort:
-            params["sort"] = sort
+        A natural-language query that matches nothing is retried before giving
+        up — see _STOPWORDS above for why this is needed at all:
+        1. Drop connective words, keep AND semantics (still the cheap 10-credit
+           filter endpoint) — catches cases where one word like "from" broke
+           an otherwise-matchable AND.
+        2. If that's still nothing, fall back once to OpenAlex's real
+           relevance-ranked full-text search (`search=`, ~1,000 credits).
+           Tried OR-of-words on the cheap endpoint here first — it technically
+           returns *something*, but confirmed live it's the same failure mode
+           as the citation-bias bug this file already fixed once: generic
+           words like "data" or "point" OR-matched into millions of unrelated
+           papers, with hyper-cited noise (RNA-seq pipelines, PCR protocols)
+           crowding out anything actually relevant. A blank screen is bad; a
+           screen full of confidently-wrong papers is worse. This fallback
+           only fires when the cheap path found literally nothing, so it's
+           the rare case, not every search."""
+        extra_filters = [f"{key}:{value}" for key, value in (filters or {}).items()]
 
-        data = self._get("/works", params)
+        def _run_filter(search_term: str) -> list[dict]:
+            filter_clauses = [f"title_and_abstract.search:{search_term}", *extra_filters]
+            params = {"filter": ",".join(filter_clauses), "per_page": per_page}
+            if sort:
+                params["sort"] = sort
+            data = self._get("/works", params)
+            return [normalize_work(w) for w in data.get("results", [])]
+
+        results = _run_filter(query)
+        if results:
+            return results
+
+        words = _significant_words(query)
+        if len(words) >= 2 and len(words) < len(query.split()):
+            results = _run_filter(" ".join(words))
+            if results:
+                return results
+
+        fallback_params = {"search": query, "per_page": per_page}
+        if extra_filters:
+            fallback_params["filter"] = ",".join(extra_filters)
+        data = self._get("/works", fallback_params)
         return [normalize_work(w) for w in data.get("results", [])]
 
     def get_work(self, openalex_id: str) -> dict:

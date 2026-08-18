@@ -8,10 +8,12 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
 from research_copilot import auth, theme  # noqa: E402
-from research_copilot.config import get_settings  # noqa: E402
+from research_copilot.config import get_settings, load_cloud_secrets  # noqa: E402
 from research_copilot.db import session_scope  # noqa: E402
 from research_copilot.repositories import goals as goals_repo  # noqa: E402
 from research_copilot.validation import validate_search_query  # noqa: E402
+
+load_cloud_secrets()  # Streamlit Cloud has no .env — bridges st.secrets into os.environ instead
 
 st.set_page_config(page_title="Research Copilot", page_icon="\U0001f9ed", layout="centered")
 theme.apply_theme()

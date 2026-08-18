@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
 from research_copilot import auth, chat_ui, fulltext, semantic, theme  # noqa: E402
-from research_copilot.config import get_settings  # noqa: E402
+from research_copilot.config import get_settings, load_cloud_secrets  # noqa: E402
 from research_copilot.db import DatabaseNotConfigured, session_scope  # noqa: E402
 from research_copilot.embeddings import EmbeddingsNotConfigured  # noqa: E402
 from research_copilot.llm import LLMNotConfigured, chat  # noqa: E402
@@ -34,6 +34,8 @@ from research_copilot.repositories import collections as collections_repo  # noq
 from research_copilot.repositories import notes as notes_repo  # noqa: E402
 from research_copilot.repositories import papers as papers_repo  # noqa: E402
 from research_copilot.repositories import progress as progress_repo  # noqa: E402
+
+load_cloud_secrets()  # Streamlit Cloud has no .env — bridges st.secrets into os.environ instead
 
 st.set_page_config(page_title="Workspace · Research Copilot", page_icon="\U0001f9ed", layout="wide")
 theme.apply_theme()
@@ -189,7 +191,16 @@ with left:
         st.markdown("##### Query Matching Papers")
         results = list(st.session_state.get("search_results", []))
         if not results:
-            st.caption("Search from the landing page to find papers" + (" to add here." if active_collection else "."))
+            if "search_results" in st.session_state:
+                # Distinct from "haven't searched yet" — this is a real search that
+                # genuinely found nothing on OpenAlex, not a blank first-load state.
+                st.caption(
+                    "No papers found for this exact phrasing. Try fewer or more "
+                    "general words — OpenAlex's search does better with a short "
+                    "phrase than a full sentence."
+                )
+            else:
+                st.caption("Search from the landing page to find papers" + (" to add here." if active_collection else "."))
         else:
             sort_options = ["citations", "date", "name"]
             if settings.has_fm_api and settings.has_db:

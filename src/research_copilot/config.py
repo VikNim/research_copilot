@@ -72,8 +72,35 @@ class Settings:
 
     @property
     def has_fm_api(self) -> bool:
-        return bool(self.fm_api_base_url and (self.fm_api_token or self.databricks_profile))
+        has_auth = bool(
+            self.fm_api_token
+            or self.databricks_profile
+            or (self.databricks_client_id and self.databricks_client_secret)
+        )
+        return bool(self.fm_api_base_url and has_auth)
 
 
 def get_settings() -> Settings:
     return Settings()
+
+
+def load_cloud_secrets() -> None:
+    """Streamlit Community Cloud has no .env file — secrets are pasted into its
+    dashboard as TOML and exposed via st.secrets instead. Every Settings field
+    above reads from os.environ, so bridge st.secrets into it here rather than
+    teaching each field two lookup paths. Call once per entrypoint, after
+    load_dotenv(override=True).
+
+    No-op locally: [auth] (Google OAuth) is the only thing in a local
+    secrets.toml today, and it's a nested table, not a flat string value, so
+    the isinstance check below skips it — nothing here overrides a local .env.
+    """
+    import streamlit as st
+
+    try:
+        secrets = st.secrets
+    except Exception:
+        return
+    for key, value in secrets.items():
+        if isinstance(value, str):
+            os.environ[key] = value
