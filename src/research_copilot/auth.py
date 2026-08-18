@@ -37,7 +37,8 @@ def current_user() -> User | None:
 def _centered_title(site_name: str) -> None:
     st.markdown(
         f"<h1 style='text-align:center; color:{theme.header_text_color()}; "
-        "margin:0.25rem 0 0.75rem 0;'>" + site_name + "</h1>",
+        "margin:0.25rem 0 0.75rem 0; text-wrap:balance;'>"
+        f"\U0001f9ed&nbsp;&nbsp;{site_name}</h1>",
         unsafe_allow_html=True,
     )
 

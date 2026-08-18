@@ -50,6 +50,16 @@ if submitted:
         st.session_state["search_query"] = clean_query
         st.session_state.pop("search_results", None)  # force a re-fetch on Screen 2
 
+        # A fresh search from here is a fresh start in the Workspace, not a continuation
+        # of whatever was open before — without this, open reading tabs, staged (not yet
+        # saved) papers, and a previously loaded collection all silently carried over into
+        # an unrelated new search, which read as a bug (stale tabs from the last topic
+        # still showing after searching for something new).
+        st.session_state.pop("open_items", None)
+        st.session_state.pop("active_item", None)
+        st.session_state.pop("staged_papers", None)
+        st.session_state.pop("active_collection_id", None)
+
         # A search *is* stating a learning goal in plain language — record it so a
         # collection saved from this search can be linked back to what prompted it
         # (collections.learning_goal_id). Anonymous searches don't get one; there's

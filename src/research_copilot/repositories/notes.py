@@ -5,10 +5,31 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from research_copilot.models import Note
+
+# An AI-generated summary is stored as a regular note (no separate table/column
+# for it) but needs to read as its own distinct thing, not an anonymous note
+# that happens to say the same thing as the paper — this marker is how both the
+# writer (Workspace's "Add summary to collection") and readers (the badge in
+# collection paper lists) agree on what counts as "the summary", without a
+# schema change.
+AI_SUMMARY_LABEL = "✨ AI Summary"
+
+
+def format_summary_note(summary: str) -> str:
+    return f"**{AI_SUMMARY_LABEL}**\n\n{summary}"
+
+
+def has_ai_summary(session: Session, *, user_id: uuid.UUID, paper_id: str) -> bool:
+    stmt = select(
+        exists().where(
+            Note.user_id == user_id, Note.paper_id == paper_id, Note.content.startswith(f"**{AI_SUMMARY_LABEL}**")
+        )
+    )
+    return bool(session.scalar(stmt))
 
 
 def add_note(

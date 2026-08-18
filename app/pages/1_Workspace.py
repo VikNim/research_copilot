@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
-from research_copilot import agent, auth, semantic, theme  # noqa: E402
+from research_copilot import auth, chat_ui, fulltext, semantic, theme  # noqa: E402
 from research_copilot.config import get_settings  # noqa: E402
 from research_copilot.db import DatabaseNotConfigured, session_scope  # noqa: E402
 from research_copilot.embeddings import EmbeddingsNotConfigured  # noqa: E402
@@ -39,6 +39,7 @@ st.set_page_config(page_title="Workspace · Research Copilot", page_icon="\U0001
 theme.apply_theme()
 
 MAX_OPEN_ITEMS = 10
+VIEW_LABELS = {"abstract": "Abstract", "full_text": "Full text", "summary": "Summary"}
 settings = get_settings()
 
 active_collection_id: uuid.UUID | None = None
@@ -50,7 +51,10 @@ if "search_query" not in st.session_state and active_collection_id is None:
     st.page_link("Home.py", label="Back to search")
     st.stop()
 
-st.session_state.setdefault("open_items", [])  # list of {"paper_id", "mode", "paper", "summary"}
+st.session_state.setdefault("open_items", [])  # list of {"paper_id", "paper", "view", "summary",
+                                                 # "summary_source", "full_text", "full_text_tried"} —
+                                                 # one entry per paper (not per paper+mode); "view" picks
+                                                 # which of abstract/full_text/summary is showing.
 st.session_state.setdefault("active_item", None)
 st.session_state.setdefault("staged_papers", {})  # paper_id -> normalized paper dict (discovery mode only)
 
@@ -81,6 +85,14 @@ def _normalize_db_paper(p) -> dict:
     }
 
 
+def _new_item(paper: dict, view: str) -> dict:
+    return {
+        "paper_id": paper["id"], "paper": paper, "view": view,
+        "summary": None, "summary_source": None,
+        "full_text": None, "full_text_tried": False,
+    }
+
+
 active_collection = None
 if active_collection_id is not None and settings.has_db and user is not None:
     with session_scope() as session:
@@ -95,9 +107,7 @@ if active_collection_id is not None and settings.has_db and user is not None:
             # rather than requiring a click per paper just to see what's there.
             if not st.session_state["open_items"]:
                 for p in collections_repo.list_papers_in_collection(session, active_collection_id)[:MAX_OPEN_ITEMS]:
-                    st.session_state["open_items"].append(
-                        {"paper_id": p.id, "mode": "read", "paper": _normalize_db_paper(p), "summary": None}
-                    )
+                    st.session_state["open_items"].append(_new_item(_normalize_db_paper(p), "abstract"))
                 if st.session_state["open_items"]:
                     st.session_state["active_item"] = 0
         else:
@@ -118,20 +128,31 @@ elif "search_query" in st.session_state:
 left, mid, right = st.columns([1, 2.4, 1], gap="medium")
 
 
-def _open_item(paper: dict, mode: str) -> None:
+def _open_item(paper: dict, view: str) -> None:
+    """One open item per paper, not per paper+view — Read and Summarize on an
+    already-open paper switch its view instead of opening a second tab for the
+    same paper (that used to double up on every paper with both actions used)."""
     items = st.session_state["open_items"]
-    key = (paper["id"], mode)
-    for item in items:
-        if (item["paper_id"], item["mode"]) == key:
-            st.session_state["active_item"] = items.index(item)
+    for i, item in enumerate(items):
+        if item["paper_id"] == paper["id"]:
+            item["view"] = view
+            # The content-view segmented_control below has a stable key (so it
+            # remembers a manual tab switch across reruns) — which also means it
+            # ignores `default` after its first render, so switching the view here
+            # needs to write straight into its backing session_state key too, or
+            # clicking Summarize on an already-open paper wouldn't visibly switch
+            # the tab.
+            st.session_state[f"content_view_{paper['id']}"] = VIEW_LABELS[view]
+            st.session_state["active_item"] = i
             return
     if len(items) >= MAX_OPEN_ITEMS:
         st.toast(f"Close something first — {MAX_OPEN_ITEMS} open items max.", icon="⚠️")
         return
-    items.append({"paper_id": paper["id"], "mode": mode, "paper": paper, "summary": None})
+    items.append(_new_item(paper, view))
+    st.session_state[f"content_view_{paper['id']}"] = VIEW_LABELS[view]
     st.session_state["active_item"] = len(items) - 1
 
-    if mode == "read" and active_collection_id is not None and user is not None:
+    if active_collection_id is not None and user is not None:
         with session_scope() as session:
             progress_repo.mark_started(
                 session, user_id=user.id, paper_id=paper["id"], collection_id=active_collection_id
@@ -146,8 +167,11 @@ def _add_to_collection(paper: dict, summary: str | None = None) -> None:
             saved = papers_repo.upsert_paper(session, paper)
             collections_repo.add_paper(session, collection_id=active_collection_id, paper_id=saved.id)
             if summary:
-                notes_repo.add_note(session, user_id=user.id, paper_id=saved.id, content=f"AI summary: {summary}")
-        st.toast(f"Added to {active_collection['name']}.", icon="✅")
+                notes_repo.add_note(
+                    session, user_id=user.id, paper_id=saved.id, content=notes_repo.format_summary_note(summary)
+                )
+        verb = "paper and its summary" if summary else "paper"
+        st.toast(f"Added the {verb} to {active_collection['name']}.", icon="✅")
     else:
         paper = dict(paper)
         if summary:
@@ -204,7 +228,7 @@ with left:
                         st.caption(f"{paper.get('publication_year', '?')} · {paper.get('cited_by_count', 0)} citations")
                         with st.popover("⋮"):
                             if st.button("Read", key=f"read_{paper['id']}", use_container_width=True):
-                                _open_item(paper, "read")
+                                _open_item(paper, "abstract")
                                 st.rerun()
                             if st.button("Summarize", key=f"sum_{paper['id']}", use_container_width=True):
                                 _open_item(paper, "summary")
@@ -219,6 +243,25 @@ with left:
                                 st.rerun()
 
 # --- Middle panel: Paper Contents / AI Summary ---
+
+def _get_full_text_for_item(item: dict) -> str | None:
+    """Fetches (or returns cached) full text for the item's paper. Needs a
+    database — that's also what the extraction cache itself is stored in, same
+    precondition semantic-match sort already has."""
+    if item["full_text_tried"]:
+        return item["full_text"]
+    item["full_text_tried"] = True
+    if not settings.has_db:
+        return None
+    with session_scope() as session:
+        paper_row = papers_repo.get_paper(session, item["paper_id"])
+        if paper_row is None:
+            return None
+        text = fulltext.ensure_full_text(session, paper_row)
+    item["full_text"] = text
+    return text
+
+
 with mid:
     with st.container(key="panel-tint-2"):
         st.markdown("##### Paper Contents / AI Summary")
@@ -226,7 +269,8 @@ with mid:
         if not items:
             st.info("Open a paper from the left panel — Read or Summarize.")
         else:
-            labels = [f"{'📄' if i['mode'] == 'read' else '✨'} {i['paper']['title'][:24]}…" for i in items]
+            view_icons = {"abstract": "📄", "full_text": "📚", "summary": "✨"}
+            labels = [f"{view_icons[i['view']]} {i['paper']['title'][:24]}…" for i in items]
             active = st.session_state["active_item"] or 0
             active = min(active, len(items) - 1)
             chosen_label = st.segmented_control(
@@ -241,8 +285,15 @@ with mid:
             authors = ", ".join(a.get("display_name", "") for a in paper.get("authors", []) if a.get("display_name"))
             st.caption(f"{authors or 'Unknown authors'} · {paper.get('publication_year', '?')}")
 
+            chosen_view_label = st.segmented_control(
+                "Content", list(VIEW_LABELS.values()), default=VIEW_LABELS[item["view"]],
+                key=f"content_view_{paper['id']}", label_visibility="collapsed",
+            )
+            view_by_label = {v: k for k, v in VIEW_LABELS.items()}
+            item["view"] = view_by_label.get(chosen_view_label, item["view"])
+
             with st.container(height=380, border=True, key="card-reading-pane"):
-                if item["mode"] == "read":
+                if item["view"] == "abstract":
                     # abstract and OA full text are independent facts from OpenAlex — a paper
                     # can be missing either, both, or neither, so state exactly what's known
                     # instead of stacking two messages that read as contradictory together.
@@ -252,74 +303,84 @@ with mid:
                     if has_abstract:
                         st.write(paper["abstract"])
                     elif has_oa_pdf:
-                        st.caption("No abstract indexed for this paper. See the full text link below.")
+                        st.caption("No abstract indexed for this paper. Try the Full text tab.")
                     else:
                         st.caption("OpenAlex has neither an abstract nor an open-access copy indexed for this paper.")
 
-                    if has_oa_pdf:
-                        st.link_button("Open full text (external, open access)", paper["oa_pdf_url"])
-                    elif has_abstract:
-                        st.caption("No open-access copy indexed. Full-text reading isn't in v1 anyway (abstract-only).")
+                elif item["view"] == "full_text":
+                    if not paper.get("oa_pdf_url"):
+                        st.caption("No open-access PDF indexed for this paper — full text isn't available.")
+                    elif not settings.has_db:
+                        st.caption("Full-text fetching needs a database configured.")
+                    else:
+                        with st.spinner("Fetching full text..."):
+                            text = _get_full_text_for_item(item)
+                        if text:
+                            st.caption(f"{len(text):,} characters extracted from the open-access PDF.")
+                            st.write(text)
+                        else:
+                            st.caption(
+                                "Couldn't extract full text from this paper's open-access link — it may not be a "
+                                "direct PDF, or the PDF may be scanned images rather than real text."
+                            )
+                            st.link_button("Open the source link", paper["oa_pdf_url"])
 
-                    if active_collection_id is not None and user is not None:
-                        st.divider()
-                        st.markdown("**Notes for this paper**")
-                        with session_scope() as session:
-                            for n in notes_repo.list_for_paper(session, user_id=user.id, paper_id=paper["id"]):
-                                st.caption(f"{n.created_at:%Y-%m-%d}: {n.content}")
-                else:
+                else:  # summary
                     if item["summary"] is None:
                         if not settings.has_fm_api:
                             st.info("AI summaries need Databricks FM API credentials.")
-                        elif not paper.get("abstract"):
-                            st.warning("No abstract to summarize.")
                         else:
-                            st.caption(
-                                "⏳ First summary can take a few seconds — stay on this item until it finishes, "
-                                "switching to something else will restart it."
-                            )
-                            with st.spinner("Summarizing..."):
-                                try:
-                                    resp = chat(
-                                        [
-                                            {
-                                                "role": "user",
-                                                "content": (
-                                                    "Summarize this abstract in 3-4 sentences for someone new to the "
-                                                    f"topic. Cite it as ({authors or 'Unknown'}, "
-                                                    f"{paper.get('publication_year', '?')}).\n\n"
-                                                    f"Title: {paper['title']}\nAbstract: {paper['abstract']}"
-                                                ),
-                                            }
-                                        ]
-                                    )
-                                    item["summary"] = resp.choices[0].message.content
-                                except LLMNotConfigured as exc:
-                                    item["summary"] = f"_{exc}_"
+                            with st.spinner("Checking for full text..."):
+                                source_text = _get_full_text_for_item(item)
+                            source = "full_text" if source_text else "abstract"
+                            source_text = source_text or paper.get("abstract")
+                            if not source_text:
+                                st.warning("No full text or abstract available to summarize.")
+                            else:
+                                st.caption(
+                                    "⏳ First summary can take a few seconds (longer for a full paper) — stay on "
+                                    "this item until it finishes, switching to something else will restart it."
+                                )
+                                with st.spinner("Summarizing..."):
+                                    try:
+                                        if source == "full_text":
+                                            prompt = (
+                                                "Summarize this paper in 5-8 sentences for someone new to the topic, "
+                                                "covering its core claim, method, and finding. Cite it as "
+                                                f"({authors or 'Unknown'}, {paper.get('publication_year', '?')}).\n\n"
+                                                f"Title: {paper['title']}\nFull text: {source_text}"
+                                            )
+                                        else:
+                                            prompt = (
+                                                "Summarize this abstract in 3-4 sentences for someone new to the "
+                                                f"topic. Cite it as ({authors or 'Unknown'}, "
+                                                f"{paper.get('publication_year', '?')}).\n\n"
+                                                f"Title: {paper['title']}\nAbstract: {source_text}"
+                                            )
+                                        resp = chat([{"role": "user", "content": prompt}])
+                                        item["summary"] = resp.choices[0].message.content
+                                        item["summary_source"] = source
+                                    except LLMNotConfigured as exc:
+                                        item["summary"] = f"_{exc}_"
                     if item["summary"]:
+                        if item["summary_source"] == "abstract":
+                            st.caption("Summarized from the abstract — no open-access full text available.")
+                        elif item["summary_source"] == "full_text":
+                            st.caption("Summarized from the paper's full text.")
                         st.write(item["summary"])
 
-            if item["mode"] == "summary" and item["summary"]:
-                c1, c2 = st.columns([1, 1])
-                if c1.button("Add summary to collection", key=f"add_summary_{paper['id']}"):
+            if item["view"] == "summary" and item["summary"]:
+                if st.button("Add paper + summary to collection", key=f"add_summary_{paper['id']}"):
                     _add_to_collection(paper, summary=item["summary"])
                     st.rerun()
-                with c2.popover("Save an excerpt instead"):
-                    st.caption(
-                        "True click-and-drag highlighting needs a custom browser component — "
-                        "trim this down to the part you want to keep instead."
-                    )
-                    excerpt = st.text_area(
-                        # 19970, not 20000: leaves room for the "AI summary: [excerpt] "
-                        # prefix _add_to_collection adds before this hits the notes
-                        # table's 20000-char CHECK constraint (see models.py).
-                        "Excerpt", value=item["summary"], key=f"excerpt_{paper['id']}", height=120, max_chars=19970
-                    )
-                    if st.button("Save excerpt", key=f"save_excerpt_{paper['id']}") and excerpt.strip():
-                        _add_to_collection(paper, summary=f"[excerpt] {excerpt.strip()}")
-                        st.rerun()
 
-            if active_collection_id is not None and user is not None and item["mode"] == "read":
+            if active_collection_id is not None and user is not None:
+                st.divider()
+                st.markdown("**Notes for this paper**")
+                with session_scope() as session:
+                    for n in notes_repo.list_for_paper(session, user_id=user.id, paper_id=paper["id"]):
+                        st.caption(f"{n.created_at:%Y-%m-%d}: {n.content}")
+
                 with session_scope() as session:
                     current = progress_repo.list_for_collection(
                         session, user_id=user.id, collection_id=active_collection_id
@@ -360,9 +421,10 @@ with right:
                 collection_papers = collections_repo.list_papers_in_collection(session, active_collection_id)
                 for p in collection_papers:
                     c1, c2 = st.columns([5, 1])
-                    c1.write(p.title[:38])
+                    has_summary = notes_repo.has_ai_summary(session, user_id=user.id, paper_id=p.id) if user else False
+                    c1.write(p.title[:38] + (f" {notes_repo.AI_SUMMARY_LABEL}" if has_summary else ""))
                     if c2.button("📖", key=f"cread_{p.id}", help="Read"):
-                        _open_item(_normalize_db_paper(p), "read")
+                        _open_item(_normalize_db_paper(p), "abstract")
                         st.rerun()
             if not collection_papers:
                 st.caption("Nothing added yet — use the ⋮ menu on the left.")
@@ -372,7 +434,7 @@ with right:
                 st.caption("Add papers from the left panel.")
             for paper_id, paper in list(staged.items()):
                 c1, c2 = st.columns([5, 1])
-                label = paper["title"][:36] + (" ✨" if paper.get("_pending_summary") else "")
+                label = paper["title"][:36] + (f" {notes_repo.AI_SUMMARY_LABEL}" if paper.get("_pending_summary") else "")
                 c1.write(label)
                 if c2.button("✕", key=f"unstage_{paper_id}"):
                     del st.session_state["staged_papers"][paper_id]
@@ -420,7 +482,7 @@ with right:
                                 if pending_summary:
                                     notes_repo.add_note(
                                         session, user_id=user.id, paper_id=saved.id,
-                                        content=f"AI summary: {pending_summary}",
+                                        content=notes_repo.format_summary_note(pending_summary),
                                     )
                         st.session_state["staged_papers"] = {}
                         verb = "Added to" if (existing_match and merge_into_existing) else "Saved"
@@ -434,50 +496,7 @@ with right:
 # both need a concrete, bounded paper set to reason over, which "everything the user
 # has ever searched for" isn't. This is the surface for 3 of the 6 tools in agent.py
 # that otherwise have no UI: retrieve_evidence, generate_reading_plan, recommend_next.
+# Same component Profile.py's collection detail view uses — see chat_ui.py.
 if active_collection and user is not None:
     st.divider()
-    st.markdown(f"##### Ask the agent about “{active_collection['name']}”")
-    if not settings.has_fm_api:
-        st.info("The agent needs Databricks FM API credentials to hold a conversation.")
-    else:
-        chat_key = str(active_collection_id)
-        chats = st.session_state.setdefault("agent_chats", {})
-        chat_history = chats.setdefault(chat_key, [])
-
-        for msg in chat_history:
-            role = msg.get("role")
-            if role == "user":
-                with st.chat_message("user"):
-                    st.write(msg.get("content", ""))
-            elif role == "assistant":
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    names = ", ".join(tc["function"]["name"] for tc in tool_calls)
-                    st.caption(f"🔧 checked: {names}")
-                if msg.get("content"):
-                    with st.chat_message("assistant"):
-                        st.write(msg["content"])
-            # role == "tool": raw tool output, not shown — the caption above already
-            # says what was used, and the assistant's next message cites what it found.
-
-        prompt = st.chat_input(
-            "Ask it to compare papers, cite evidence, or say what to read next..."
-        )
-        if prompt:
-            with st.spinner("Thinking..."):
-                try:
-                    with session_scope() as session:
-                        chats[chat_key] = agent.run_agent(
-                            session,
-                            user.id,
-                            prompt,
-                            history=chat_history,
-                            context_note=(
-                                f'The active collection_id is "{active_collection_id}" '
-                                f'(name: "{active_collection["name"]}"). Use it for any tool '
-                                "that takes a collection_id unless the user names a different one."
-                            ),
-                        )
-                except LLMNotConfigured as exc:
-                    st.error(str(exc))
-            st.rerun()
+    chat_ui.render_agent_chat(active_collection_id, active_collection["name"], user)

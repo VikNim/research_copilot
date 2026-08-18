@@ -12,17 +12,23 @@ Built as a Streamlit app on top of Databricks Lakebase (managed Postgres + pgvec
 - Every search result is cached into Postgres on first sight, so re-ranking or reopening a paper never re-fetches it
 
 **Workspace**
-- Three-panel layout: matching papers, reading pane (abstract or an AI-generated summary), and an in-progress collection
+- Three-panel layout: matching papers (its own scrollable list, independent of the page), a reading pane, and an in-progress collection
+- Each open paper has one tab with three switchable views — Abstract, Full text, and Summary — instead of opening a separate tab per action
+- Full-text ingestion: when a paper has an open-access PDF, its text is fetched, extracted, and cached on first view; Summarize prefers that full text over the abstract when it's available, and says which one it used
 - Per-paper actions (read, summarize, add to collection, discard) behind a compact menu
+- "Add paper + summary to collection" saves both at once — the summary is stored as a distinctly labeled note (✨ AI Summary), not indistinguishable from the paper itself, and a badge next to the paper in any collection list shows a summary is saved without opening it
 - Save a collection and it's automatically linked back to the learning goal that prompted it
+- Starting a new search from the landing page clears whatever was open in a previous session — no stale tabs from the last topic
 
 **Agent**
 - A tool-calling agent (Claude Haiku 4.5 via Databricks) scoped to one collection at a time
 - Six tools: search papers, list a collection's papers, retrieve evidence from an abstract, generate a reading plan, add a paper to a collection, recommend what to read next
 - Every tool call that touches a collection checks ownership first — the agent can't be steered into reading or writing another user's data
+- The same chat is available both in the Workspace (when a collection is loaded) and on that collection's Profile detail page — one conversation, not two
+- A new conversation offers suggested prompts ("Generate a reading plan for these papers," "Where should I start reading?," and others covering each tool) — they disappear once the conversation has real history
 
 **Reading plans & tracking**
-- Three-stage sequencing (review → foundational → current) using citation graph position, publication year, and an LLM-scored jargon-density signal
+- Three-stage sequencing (review → foundational → current) using citation graph position, publication year, and an LLM-scored jargon-density signal — reached by asking the agent chat (a suggested prompt does this in one click), not a separate button
 - Self-reported reading progress per paper (not started / in progress / done)
 - Notes at the paper level and the collection level
 
@@ -33,6 +39,7 @@ Built as a Streamlit app on top of Databricks Lakebase (managed Postgres + pgvec
 **Appearance**
 - Light/dark toggle, scoped per browser session (not a server-wide setting)
 - Panels tinted in one hue at four lightness steps so the workspace's three panels and the profile page's sections are visually distinct without looking like a color chart
+- Cards and buttons lift on hover with a soft shadow, inputs get a visible focus ring, and the selected segment in a tab group is colored rather than blending in — small interactive-feedback details, not just a static layout
 
 ## Tech stack
 
@@ -43,6 +50,7 @@ Built as a Streamlit app on top of Databricks Lakebase (managed Postgres + pgvec
 | LLM | Claude Haiku 4.5, via Databricks Foundation Model APIs (OpenAI-compatible surface) |
 | Embeddings | Qwen3-Embedding-0.6B, via the same Databricks FM API surface |
 | Papers | OpenAlex REST API, called directly (no wrapper/MCP layer) |
+| Full-text extraction | `pypdf` — fetches a paper's open-access PDF (when OpenAlex has one) and extracts plain text |
 | ORM | SQLAlchemy 2.0 (declarative models, typed `Mapped[...]` columns) |
 | Package/env management | `uv` |
 
@@ -57,11 +65,13 @@ app/
 src/research_copilot/
   agent.py                 # tool-calling agent + tool schemas
   auth.py                  # st.login()/st.logout() wrapper, header, theme toggle
+  chat_ui.py                # agent chat panel — shared by Workspace and Profile
   config.py                # Settings — every env var the app reads
   db.py                    # engine/session setup (local Postgres or Lakebase)
   models.py                 # SQLAlchemy ORM models (schema)
   theme.py                  # light/dark mode + panel CSS
   openalex_client.py        # OpenAlex REST client
+  fulltext.py                # open-access PDF fetch + text extraction + chunking
   llm.py / embeddings.py    # Databricks FM API calls
   databricks_auth.py        # bearer-token resolution for the FM API
   semantic.py                # embed-on-demand + cosine-similarity ranking
@@ -139,7 +149,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full database schema,
 
 ## Known limitations (v1)
 
-- Abstracts only — no full-text PDF ingestion or rendering yet (`paper_chunks` table exists, reserved for v1.1)
+- Full-text ingestion only covers the subset of papers OpenAlex marks open-access with a direct PDF link — most paywalled papers have none, and there's no attempt to work around that. Extraction quality also varies with the PDF's own layout (multi-column papers, scanned/image-only pages, and running headers/footers bleeding into the text are real `pypdf` limitations, not bugs) — this is real text from the real paper, not a structure-aware parse like Grobid would give
+- The agent's `retrieve_evidence` tool still reasons over abstracts only, not the full text — full-text ingestion exists for the reading pane and Summarize, but isn't yet wired into the agent's citations
 - Reading progress is self-reported, not scroll/page tracked (Streamlit can't observe scroll position in externally hosted content)
 - No proactive "since you added X, read Y first" suggestions yet
 - Study Buddy (a second, ELI5-layered conversational mode) has working backend logic and tests but no UI page yet

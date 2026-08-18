@@ -1,12 +1,15 @@
 """The copilot agent: one Claude model (via llm.py), six tools, mapped straight
-to the capabilities in the blueprint. UNVERIFIED end-to-end — needs a real
-Databricks FM API endpoint (see llm.py). The tool-dispatch plumbing and each
-tool's DB-side logic are real and independently testable through the
-repositories/sequencing modules they call.
+to the capabilities in the blueprint. Verified end-to-end against a real
+Databricks FM API endpoint (see tests/test_agent_live.py). The tool-dispatch
+plumbing and each tool's DB-side logic are also independently testable through
+the repositories/sequencing modules they call.
 
-v1 note: retrieve_evidence works at abstract granularity (no paper_chunks yet —
-full-text ingestion is deferred). Still "retrieve, don't dump": the agent passes
-a specific paper_id subset, not the user's whole library.
+v1 note: retrieve_evidence still works at abstract granularity, not full text —
+fulltext.py/paper_chunks exist now (see the Workspace "Full text" reading view
+and Summarize's full-text preference), but retrieve_evidence hasn't been wired
+to use them; abstract is enough to stay "retrieve, don't dump" for now, since
+the agent already passes a specific paper_id subset, not the user's whole
+library. Worth revisiting if full-text-grounded citations become the ask.
 """
 
 from __future__ import annotations
@@ -177,12 +180,6 @@ def _tool_retrieve_evidence(session: Session, args: dict) -> dict:
             }
         )
     return {"evidence": evidence}
-
-
-def generate_reading_plan_for_collection(session: Session, collection_id: str, user_id: uuid.UUID) -> dict:
-    """Public entry point for triggering the sequencer directly from the UI
-    (Screen 3's "Generate reading plan" button), without going through the chat loop."""
-    return _tool_generate_reading_plan(session, {"collection_id": collection_id}, user_id)
 
 
 def _tool_generate_reading_plan(session: Session, args: dict, user_id: uuid.UUID) -> dict:

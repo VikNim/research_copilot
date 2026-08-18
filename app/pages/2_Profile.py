@@ -10,8 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)  # .env is the source of truth locally — don't let a stray shell export shadow it
 
-from research_copilot import auth, theme  # noqa: E402
-from research_copilot.agent import generate_reading_plan_for_collection  # noqa: E402
+from research_copilot import auth, chat_ui, theme  # noqa: E402
 from research_copilot.config import get_settings  # noqa: E402
 from research_copilot.db import session_scope  # noqa: E402
 from research_copilot.repositories import collections as collections_repo  # noqa: E402
@@ -67,17 +66,10 @@ else:
 
         st.markdown(f"##### {collection.name}")
 
-        with st.container(key="panel-tint-2"):
-            if st.button("Generate reading plan"):
-                try:
-                    result = generate_reading_plan_for_collection(session, str(collection_id), user.id)
-                    st.session_state["last_plan"] = result["plan"]
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Couldn't generate a plan: {exc}")
-            if "last_plan" in st.session_state:
-                with st.expander("Latest reading plan", expanded=True):
-                    for step in st.session_state["last_plan"]:
-                        st.write(f"**{step['stage'].title()}** — {step['rationale']}")
+        # Reading plans and "where should I start" are now asked of the agent chat
+        # below (suggested prompts included) instead of a dedicated button here —
+        # one surface for that capability instead of two ways to trigger the same
+        # thing with slightly different UX.
 
         with st.container(key="panel-tint-3"):
             st.markdown("**Collection notes** _(about the topic as a whole)_")
@@ -107,11 +99,15 @@ else:
                 authors = ", ".join(link.author.display_name for link in paper.authors if link.author.display_name)
                 current = progress_by_paper.get(paper.id)
                 current_status = current.status if current else "not_started"
+                # Fetched once, above the fold — both the badge in c1 and the
+                # expander below read from this, instead of querying twice.
+                paper_notes = notes_repo.list_for_paper(session, user_id=user.id, paper_id=paper.id)
+                has_summary = any(n.content.startswith(f"**{notes_repo.AI_SUMMARY_LABEL}**") for n in paper_notes)
 
                 with st.container(border=True, key=f"card-profile-paper-{paper.id}"):
                     c1, c2 = st.columns([3, 1])
                     with c1:
-                        st.write(f"**{paper.title}**")
+                        st.write(f"**{paper.title}**" + (f" {notes_repo.AI_SUMMARY_LABEL}" if has_summary else ""))
                         st.caption(authors or "Unknown authors")
                     with c2:
                         new_status = st.selectbox(
@@ -130,7 +126,6 @@ else:
                             st.rerun()
 
                     with st.expander("Notes for this paper"):
-                        paper_notes = notes_repo.list_for_paper(session, user_id=user.id, paper_id=paper.id)
                         for n in paper_notes:
                             st.caption(f"{n.created_at:%Y-%m-%d}: {n.content}")
                         note_text = st.text_input("Add a note", key=f"note_input_{paper.id}", max_chars=20000)
@@ -138,3 +133,12 @@ else:
                             with session_scope() as write_session:
                                 notes_repo.add_note(write_session, user_id=user.id, paper_id=paper.id, content=note_text.strip())
                             st.rerun()
+
+        collection_name = collection.name
+
+    # Outside the read session on purpose (expire_on_commit=False keeps collection_name
+    # usable regardless, but the chat's own agent turn shouldn't run inside — and hold
+    # open — a connection this page only needed for the reads above). Same component
+    # Workspace.py's loaded-collection view uses — see chat_ui.py.
+    st.divider()
+    chat_ui.render_agent_chat(collection_id, collection_name, user)

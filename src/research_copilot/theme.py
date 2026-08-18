@@ -30,11 +30,15 @@ _LIGHT = {
     "muted_text": "#5B6B79",
     "border": "#D8E1E8",
     "primary": "#1F5C6B",
+    "primary_hover": "#164753",
     "primary_text": "#FFFFFF",
     "input_bg": "#FFFFFF",
     "card_bg": "rgba(255, 255, 255, 0.75)",
     "card_border": "rgba(31, 41, 51, 0.12)",
     "header_text": "#2C4A54",  # subtle dark teal — legible, not black
+    "shadow_sm": "0 1px 2px rgba(23, 43, 51, 0.06)",
+    "shadow_md": "0 8px 24px rgba(23, 43, 51, 0.10)",
+    "shadow_focus": "0 0 0 3px rgba(31, 92, 107, 0.18)",
     # One hue (teal, matches primaryColor), four lightness steps.
     "panel_tint_1_bg": "#EAF4F5", "panel_tint_1_border": "#BFE0E3",
     "panel_tint_2_bg": "#DCEEF0", "panel_tint_2_border": "#A7D6DA",
@@ -49,11 +53,15 @@ _DARK = {
     "muted_text": "#9AA9B6",
     "border": "#2A333D",
     "primary": "#4FB4CC",
+    "primary_hover": "#6FC7DC",
     "primary_text": "#0B1116",
     "input_bg": "#1B2229",
     "card_bg": "rgba(255, 255, 255, 0.05)",
     "card_border": "rgba(255, 255, 255, 0.12)",
     "header_text": "#A9CDD3",  # light teal — legible on dark, not stark white
+    "shadow_sm": "0 1px 2px rgba(0, 0, 0, 0.35)",
+    "shadow_md": "0 10px 28px rgba(0, 0, 0, 0.45)",
+    "shadow_focus": "0 0 0 3px rgba(79, 180, 204, 0.25)",
     # Same hue, deepened rather than blackened, same four steps.
     "panel_tint_1_bg": "#172A30", "panel_tint_1_border": "#234049",
     "panel_tint_2_bg": "#1D3239", "panel_tint_2_border": "#2C4A54",
@@ -100,18 +108,48 @@ def apply_theme() -> None:
 h1, h2, h3, h4, h5, h6, label, [data-testid="stWidgetLabel"] p {{
     color: {t['text']};
 }}
+h1, h2, h3, h4, h5, h6 {{ letter-spacing: -0.01em; font-weight: 650; }}
 [data-testid="stCaptionContainer"] {{ color: {t['muted_text']} !important; }}
 
+/* --- Buttons: a resting shadow, a lift + brighten on hover, a press-down on click --- */
 .stButton > button, [data-testid^="stBaseButton"] {{
     background-color: {t['input_bg']};
     color: {t['text']};
     border: 1px solid {t['border']};
     border-radius: 8px;
+    box-shadow: {t['shadow_sm']};
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}}
+.stButton > button:hover, [data-testid^="stBaseButton"]:hover {{
+    border-color: {t['primary']};
+    box-shadow: {t['shadow_md']};
+    transform: translateY(-1px);
+}}
+.stButton > button:active, [data-testid^="stBaseButton"]:active {{
+    transform: translateY(0);
+    box-shadow: {t['shadow_sm']};
+}}
+.stButton > button:focus-visible, [data-testid^="stBaseButton"]:focus-visible {{
+    outline: none;
+    box-shadow: {t['shadow_focus']};
 }}
 [data-testid="stBaseButton-primary"] {{
     background-color: {t['primary']} !important;
     color: {t['primary_text']} !important;
     border: none !important;
+}}
+[data-testid="stBaseButton-primary"]:hover {{
+    background-color: {t['primary_hover']} !important;
+}}
+/* The selected segment in a segmented_control — whichever aria attribute this
+   Streamlit version marks it with, give it real contrast so "which tab am I
+   on" reads at a glance instead of blending into the unselected segments. */
+[data-testid^="stBaseButton"][aria-checked="true"],
+[data-testid^="stBaseButton"][aria-pressed="true"],
+[data-testid^="stBaseButton"][aria-selected="true"] {{
+    background-color: {t['primary']} !important;
+    color: {t['primary_text']} !important;
+    border-color: {t['primary']} !important;
 }}
 
 [data-testid="stTextInput"] input,
@@ -121,39 +159,50 @@ h1, h2, h3, h4, h5, h6, label, [data-testid="stWidgetLabel"] p {{
     background-color: {t['input_bg']} !important;
     color: {t['text']} !important;
     border-color: {t['border']} !important;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}}
+[data-testid="stTextInput"] input:focus,
+[data-testid="stTextArea"] textarea:focus,
+[data-testid="stChatInput"] textarea:focus {{
+    border-color: {t['primary']} !important;
+    box-shadow: {t['shadow_focus']} !important;
 }}
 
-[data-testid="stExpander"], [data-testid="stPopoverBody"] {{
+[data-testid="stExpander"], [data-testid="stPopoverBody"], [data-testid="stChatMessage"] {{
     background-color: {t['card_bg']};
     border: 1px solid {t['card_border']};
     border-radius: 10px;
+    box-shadow: {t['shadow_sm']};
 }}
 
 hr {{ border-color: {t['border']}; }}
 
 /* Panels — wrap a whole panel's content with st.container(key="panel-tint-<n>") */
-.st-key-panel-tint-1 {{
-    background: {t['panel_tint_1_bg']}; border: 1px solid {t['panel_tint_1_border']};
-    border-radius: 14px; padding: 1rem;
+.st-key-panel-tint-1, .st-key-panel-tint-2, .st-key-panel-tint-3, .st-key-panel-tint-4 {{
+    border-radius: 14px; padding: 1rem; box-shadow: {t['shadow_sm']};
+    transition: box-shadow 0.2s ease;
 }}
-.st-key-panel-tint-2 {{
-    background: {t['panel_tint_2_bg']}; border: 1px solid {t['panel_tint_2_border']};
-    border-radius: 14px; padding: 1rem;
-}}
-.st-key-panel-tint-3 {{
-    background: {t['panel_tint_3_bg']}; border: 1px solid {t['panel_tint_3_border']};
-    border-radius: 14px; padding: 1rem;
-}}
-.st-key-panel-tint-4 {{
-    background: {t['panel_tint_4_bg']}; border: 1px solid {t['panel_tint_4_border']};
-    border-radius: 14px; padding: 1rem;
-}}
+.st-key-panel-tint-1 {{ background: {t['panel_tint_1_bg']}; border: 1px solid {t['panel_tint_1_border']}; }}
+.st-key-panel-tint-2 {{ background: {t['panel_tint_2_bg']}; border: 1px solid {t['panel_tint_2_border']}; }}
+.st-key-panel-tint-3 {{ background: {t['panel_tint_3_bg']}; border: 1px solid {t['panel_tint_3_border']}; }}
+.st-key-panel-tint-4 {{ background: {t['panel_tint_4_bg']}; border: 1px solid {t['panel_tint_4_border']}; }}
 
 /* Cards inside panels — wrap one card with st.container(border=True, key=f"card-...") */
 [class*="st-key-card-"] {{
     background-color: {t['card_bg']} !important;
     border-color: {t['card_border']} !important;
     border-radius: 10px !important;
+    box-shadow: {t['shadow_sm']};
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}}
+[class*="st-key-card-"]:hover {{
+    box-shadow: {t['shadow_md']};
+    border-color: {t['primary']} !important;
+    transform: translateY(-2px);
+}}
+
+@media (prefers-reduced-motion: reduce) {{
+    *, *::before, *::after {{ transition: none !important; animation: none !important; }}
 }}
 </style>
 """,

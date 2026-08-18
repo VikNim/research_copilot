@@ -30,7 +30,7 @@ The OAuth-credential path (`db.py`'s `_build_lakebase_credential_creator`) still
 
 ## Schema
 
-9 core tables, plus 4 for the Study Buddy mode and 1 reserved for future full-text ingestion. `papers.id` and `authors.id` are OpenAlex IDs used directly as primary keys, so re-fetching a work is a natural upsert rather than a dedupe step.
+9 core tables, plus 4 for the Study Buddy mode and 1 for full-text ingestion. `papers.id` and `authors.id` are OpenAlex IDs used directly as primary keys, so re-fetching a work is a natural upsert rather than a dedupe step.
 
 | Table | Purpose | Notable constraints |
 |---|---|---|
@@ -43,7 +43,7 @@ The OAuth-credential path (`db.py`'s `_build_lakebase_credential_creator`) still
 | `collection_papers` | Collection↔paper join, ordered | |
 | `reading_progress` | Per-user, per-paper, per-collection status | `status` enum, `progress_pct` 0–100, unique per (user, paper, collection) |
 | `notes` | Free text, scoped to a paper, a collection, or both | at least one scope required; content ≤20000 chars |
-| `paper_chunks` | Reserved for v1.1 full-text ingestion | not written to in v1 |
+| `paper_chunks` | Cached full-text of open-access papers, in ~1500-char paragraph-packed pieces | no unique constraint on `(paper_id, chunk_index)` — re-ingestion deletes and reinserts rather than upserting |
 | `study_concepts`, `concept_explanations`, `concept_evidence`, `comprehension_checks` | Study Buddy's per-concept explanation journey | see `study_buddy.py` |
 
 HNSW was chosen over ivfflat for the papers embedding index specifically because ivfflat needs representative data present *before* the index is built to cluster well — a bad fit for a cache that grows one search at a time. HNSW builds incrementally.
@@ -67,6 +67,22 @@ Every tool that takes a `collection_id` calls `_require_owned_collection` first,
 
 Each tool call in `run_agent`'s loop runs inside its own `session.begin_nested()` (a SAVEPOINT). Without this, one failed tool call (e.g. a bad `paper_id` causing a `ForeignKeyViolation`) would poison the whole transaction and cause every subsequent tool call in the same turn to fail too, even unrelated ones.
 
+The agent chat itself (`src/research_copilot/chat_ui.py`) is a single component both Workspace's loaded-collection view and Profile's collection detail view call — one conversation per collection (`st.session_state["agent_chats"][str(collection_id)]`), not a separate history per page. A new (empty) conversation shows five suggested prompts, one per tool the agent actually has, so each one demonstrably does something; they disappear once real history exists so they don't crowd actual messages. This chat is also the only way to trigger a reading plan now — there's no longer a separate "Generate reading plan" button, since it was a second, divergent way to reach the same `generate_reading_plan` tool the chat already exposes.
+
+Summaries saved to a collection are stored as regular `notes` rows (no separate table) but need to read as their own distinct thing rather than an anonymous note that happens to repeat the paper's content. `notes_repo.format_summary_note()`/`AI_SUMMARY_LABEL` mark this with a `**✨ AI Summary**` heading as the first line of the note's content — both the writer (Workspace's "Add paper + summary to collection") and readers (`has_ai_summary()`, used for the badge shown next to a paper in collection lists) agree on this marker. Deliberately not a schema column: the marker is enough to make the summary distinguishable and discoverable without a migration.
+
+## Full-text ingestion
+
+`src/research_copilot/fulltext.py` fetches a paper's open-access PDF (`paper.oa_pdf_url`, when OpenAlex has one), extracts text with `pypdf`, and caches it as `paper_chunks` rows via `repositories/chunks.py`. `ensure_full_text(session, paper)` is the entry point: cache hit → return the cached text; no OA PDF → return `None`; otherwise fetch, extract, chunk, store, return.
+
+Real constraints, not glossed over:
+- Only works for the subset of papers with a direct-PDF open-access link. Most paywalled papers have none.
+- Extraction quality tracks the PDF's own layout — multi-column papers, scanned/image-only pages, and running headers/footers bleeding into body text are real `pypdf` limitations. This is "real text from the real paper," not a structure-aware parse the way Grobid would produce.
+- A real bug was caught and fixed during this: `pypdf.extract_text()` can emit NUL (`\x00`) bytes for certain PDF font encodings, and Postgres text columns reject those outright (`DataError`). Fixed by stripping NUL bytes before storing — caught live against a real arXiv PDF, not found by inspection.
+- Downloads are capped at 25MB and extracted text at 150,000 characters, guarding against a mislinked or pathological (e.g. scanned-book-length) PDF; content-type/magic-byte checked before attempting to parse, so an HTML landing page mislabeled as the OA link fails cleanly instead of being fed to the PDF parser.
+
+The Workspace reading pane (`app/pages/1_Workspace.py`) gives each open paper one item with three switchable views — Abstract, Full text, Summary — instead of the earlier design where Read and Summarize each opened a separate tab for the same paper. Summarize calls `ensure_full_text` first and only falls back to the abstract if there's no full text available, and the UI states which source a given summary actually came from.
+
 ## Security model
 
 - **Least privilege**: the app's own database role (`app_user`, see `lakebase_app_user_grants.sql`) has `SELECT`/`INSERT`/`UPDATE`/`DELETE` only — no `CREATE`/`ALTER`/`DROP`. Schema migrations run under a separate, owner-level connection. `tests/test_least_privilege.py` proves this against a real restricted role, not just by reading the grant statements.
@@ -86,4 +102,4 @@ Two mechanisms:
 
 ## Testing
 
-`uv run pytest` — 44 tests as of this writing. Database-backed tests are skipped automatically without `DATABASE_URL`; tests marked `integration` hit real external services (OpenAlex; Databricks FM APIs, gated separately by `requires_fm_api`). All DB-backed tests use a transaction that's rolled back at the end (`tests/conftest.py`'s `db_session` fixture), so running the suite against real Lakebase leaves no residue — proven live, not assumed.
+`uv run pytest` — 50 tests as of this writing. Database-backed tests are skipped automatically without `DATABASE_URL`; tests marked `integration` hit real external services (OpenAlex; Databricks FM APIs, gated separately by `requires_fm_api`). All DB-backed tests use a transaction that's rolled back at the end (`tests/conftest.py`'s `db_session` fixture), so running the suite against real Lakebase leaves no residue — proven live, not assumed.

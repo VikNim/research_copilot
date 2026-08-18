@@ -147,6 +147,28 @@ def test_notes_two_scopes_paper_and_collection(db_session):
 
 
 @requires_db
+def test_ai_summary_notes_are_labeled_and_detectable(db_session):
+    """A saved summary needs to read as its own distinct thing, not an
+    anonymous note that happens to repeat the paper's content — and a
+    regular, manually-typed note must not be mistaken for one."""
+    user = users_repo.upsert_user(db_session, google_sub="sub-8", email="h@example.com", display_name="H", avatar_url=None)
+    paper = papers_repo.upsert_paper(db_session, _fake_paper("WSUM1", "Summary Label Paper", 2022, 1))
+
+    assert not notes_repo.has_ai_summary(db_session, user_id=user.id, paper_id=paper.id)
+
+    notes_repo.add_note(
+        db_session, user_id=user.id, paper_id=paper.id,
+        content=notes_repo.format_summary_note("This paper shows X causes Y."),
+    )
+    notes_repo.add_note(db_session, user_id=user.id, paper_id=paper.id, content="my own manual note")
+
+    assert notes_repo.has_ai_summary(db_session, user_id=user.id, paper_id=paper.id)
+    contents = [n.content for n in notes_repo.list_for_paper(db_session, user_id=user.id, paper_id=paper.id)]
+    flagged = [c.startswith(f"**{notes_repo.AI_SUMMARY_LABEL}**") for c in contents]
+    assert sorted(flagged) == [False, True]  # exactly one of the two notes is the summary
+
+
+@requires_db
 def test_search_creates_learning_goal_and_links_to_saved_collection(db_session):
     """Closes a real gap: learning_goals existed in the schema since day one but
     no UI flow ever wrote to it. Screen 1's search is the actual "state a
