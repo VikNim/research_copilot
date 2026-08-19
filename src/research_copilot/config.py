@@ -37,11 +37,28 @@ class Settings:
     # Useful for a one-off connectivity check; not meant to back the running app.
     lakebase_static_token: str | None = field(default_factory=lambda: os.environ.get("LAKEBASE_STATIC_TOKEN"))
 
-    # --- Databricks Foundation Model APIs (agent LLM + embeddings) ---
+    # --- Databricks Foundation Model APIs (embeddings always; chat when no proxy below is set) ---
     fm_api_base_url: str | None = field(default_factory=lambda: os.environ.get("DATABRICKS_FM_BASE_URL"))
     fm_api_token: str | None = field(default_factory=lambda: os.environ.get("DATABRICKS_FM_TOKEN"))
+    # LLM_MODEL's meaning depends on which chat backend is active: the Databricks model
+    # id (e.g. "databricks-claude-haiku-4-5") normally, or the proxy's own model name
+    # once CHAT_PROXY_BASE_URL/CHAT_PROXY_API_KEY are set — see llm.py.
     llm_model: str = field(default_factory=lambda: os.environ.get("LLM_MODEL", "databricks-claude-haiku-4-5"))
     embedding_model: str = field(default_factory=lambda: os.environ.get("EMBEDDING_MODEL", "databricks-qwen3-embedding-0-6b"))
+
+    # --- Chat LLM proxy (optional): an OpenAI-compatible endpoint that replaces the
+    # Databricks model for chat only — the agent, summaries, and reading plans go
+    # through this when set. Embeddings/semantic search are untouched and stay on
+    # Databricks regardless, since this proxy has no embeddings endpoint of its own.
+    chat_proxy_base_url: str | None = field(default_factory=lambda: os.environ.get("CHAT_PROXY_BASE_URL"))
+    chat_proxy_api_key: str | None = field(default_factory=lambda: os.environ.get("CHAT_PROXY_API_KEY"))
+
+    # --- Chat LLM fallback proxy (optional): tried only if the primary proxy call
+    # above fails with an auth/quota error (see llm.py) — a separate model needs its
+    # own model id, since it won't be the same model name as the primary proxy's.
+    chat_fallback_proxy_base_url: str | None = field(default_factory=lambda: os.environ.get("CHAT_FALLBACK_PROXY_BASE_URL"))
+    chat_fallback_proxy_api_key: str | None = field(default_factory=lambda: os.environ.get("CHAT_FALLBACK_PROXY_API_KEY"))
+    chat_fallback_model: str | None = field(default_factory=lambda: os.environ.get("CHAT_FALLBACK_MODEL"))
 
     # --- OpenAlex ---
     openalex_api_key: str | None = field(default_factory=lambda: os.environ.get("OPENALEX_API_KEY"))
@@ -72,12 +89,30 @@ class Settings:
 
     @property
     def has_fm_api(self) -> bool:
+        """Databricks FM API specifically — embeddings/semantic search always need
+        this (the chat proxy below has no embeddings endpoint), regardless of which
+        backend is handling chat. Chat-gating code should check has_chat_llm instead."""
         has_auth = bool(
             self.fm_api_token
             or self.databricks_profile
             or (self.databricks_client_id and self.databricks_client_secret)
         )
         return bool(self.fm_api_base_url and has_auth)
+
+    @property
+    def has_chat_proxy(self) -> bool:
+        return bool(self.chat_proxy_base_url and self.chat_proxy_api_key)
+
+    @property
+    def has_chat_fallback_proxy(self) -> bool:
+        return bool(self.chat_fallback_proxy_base_url and self.chat_fallback_proxy_api_key and self.chat_fallback_model)
+
+    @property
+    def has_chat_llm(self) -> bool:
+        """Whatever's actually available for chat — the proxy, if configured
+        (llm.py prefers it), otherwise Databricks. Use this (not has_fm_api) to
+        gate chat/summarize/agent UI; use has_fm_api for embeddings-only gating."""
+        return self.has_chat_proxy or self.has_fm_api
 
 
 def get_settings() -> Settings:

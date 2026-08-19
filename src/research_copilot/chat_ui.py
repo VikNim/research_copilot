@@ -38,8 +38,8 @@ SUGGESTED_PROMPTS = [
 def render_agent_chat(collection_id: uuid.UUID, collection_name: str, user: User) -> None:
     settings = get_settings()
     st.markdown(f"##### Ask the agent about “{collection_name}”")
-    if not settings.has_fm_api:
-        st.info("The agent needs Databricks FM API credentials to hold a conversation.")
+    if not settings.has_chat_llm:
+        st.info("The agent needs a chat LLM configured (Databricks FM API or the chat proxy) to hold a conversation.")
         return
 
     chat_key = str(collection_id)

@@ -338,8 +338,8 @@ with mid:
 
                 else:  # summary
                     if item["summary"] is None:
-                        if not settings.has_fm_api:
-                            st.info("AI summaries need Databricks FM API credentials.")
+                        if not settings.has_chat_llm:
+                            st.info("AI summaries need a chat LLM configured (Databricks FM API or the chat proxy).")
                         else:
                             with st.spinner("Checking for full text..."):
                                 source_text = _get_full_text_for_item(item)
